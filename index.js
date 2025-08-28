@@ -83,8 +83,11 @@ function getMealsToday(user) {
   return user.mealsByDate[key];
 }
 
-// === Back-compat alias: старый код вызывает ensureUser(...) ===
+// === Back-compat alias: старый код может звать ensureUser(...)
 function ensureUser(chatId) { return getUser(chatId); }
+
+// === Компактная совместимость с прежней логикой "ожидаем еду"
+const expectingFood = new Set();
 
 // === UI (экраны/хаб) ===
 const getUI = (u) => { u.ui ??= {}; return u.ui; };
@@ -447,15 +450,25 @@ async function sendOrUpdateHome(bot, chatId, profile) {
   user.homeMsgId = msg.message_id;
 }
 
+// Удаляем служебные сообщения (чистим чат)
+async function tryDelete(bot, chatId, msgIdToDelete, keepId) {
+  try {
+    if (msgIdToDelete && msgIdToDelete !== keepId) {
+      await bot.deleteMessage(chatId, msgIdToDelete);
+    }
+  } catch (_) {}
+}
+
 // === ХЕНДЛЕРЫ ===
 // Включает «режим ожидания отчёта»
 const expectingReport = new Set();
 
 bot.on('message', async (msg) => {
-  console.log('Handler saw message:', msg.message_id, msg.text);
-  if (!msg.text) return;
-  
-  const t = msg.text;
+  try {
+    if (!msg.text && !msg.photo) return;
+    const t = msg.text || '';
+    
+    console.log('Handler saw message:', msg.message_id, t);
   
   // Если ждём запись еды — принять ЛЮБОЕ сообщение (текст/фото)
   if (getUser(msg.chat.id).awaitingMeal) {
@@ -586,6 +599,10 @@ bot.on('message', async (msg) => {
     }
     return;
   }
+  
+  } catch (e) {
+    console.error('Handler error:', e); // чтобы процесс не падал
+  }
 });
 
 bot.onText(/^\/start$/, async (msg) => {
@@ -645,41 +662,39 @@ bot.onText(/^\/admin_stats$/, async (msg) => {
   await bot.sendMessage(msg.chat.id, `Активных чатов в памяти: ${state.size}`);
 });
 
-// Обработчик нажатий по вкладкам
 bot.on('callback_query', async (q) => {
-  const data = q.data || '';
-  const m = data.match(/^nav:(home|plan|food|reports|settings)$/);
-  if (!m) return;
+  try {
+    console.log('CQ:', q.id, q.data); // ДОЛЖНО появляться в логах при клике
+    const data = q.data || '';
 
-  const screen = m[1];
-  const u = ensureUser(q.message.chat.id);
-
-  await ensureHubMessage(bot, u, screen);
-  try { await bot.answerCallbackQuery(q.id); } catch {}
-});
-
-// Обработчик админ-функций
-bot.on('callback_query', async (q) => {
-  const data = q.data || '';
-  
-  if ((q.data || '') === 'admin:reset_me') {
-    if (String(q.from.id) !== ADMIN_ID) {
-      return bot.answerCallbackQuery(q.id, { text: 'Нет прав' });
+    if (/^nav:(home|plan|food|reports|settings)$/.test(data)) {
+      const screen = data.split(':')[1];
+      await ensureHubMessage(bot, ensureUser(q.message.chat.id), screen);
+      return bot.answerCallbackQuery(q.id); // гасим "часики"
     }
-    const chatId = q.message.chat.id;
-    // сброс ТОЛЬКО этого пользователя:
-    state.set(chatId, { mealsByDate: {}, awaitingMeal: false, homeMsgId: null, tz: process.env.TZ || 'Europe/Amsterdam' });
-    await bot.answerCallbackQuery(q.id, { text: 'Сброшено (только ты).' });
-    return bot.sendMessage(chatId, 'Твои данные сброшены. Нажми /start.');
-  }
 
-  if ((q.data || '') === 'admin:reset_all') {
-    if (String(q.from.id) !== ADMIN_ID) {
-      return bot.answerCallbackQuery(q.id, { text: 'Нет прав' });
+    if (data === 'admin:reset_me') {
+      if (String(q.from.id) !== ADMIN_ID) {
+        return bot.answerCallbackQuery(q.id, { text: 'Нет прав' });
+      }
+      const chatId = q.message.chat.id;
+      // сброс ТОЛЬКО этого пользователя:
+      state.set(chatId, { mealsByDate: {}, awaitingMeal: false, homeMsgId: null, tz: process.env.TZ || 'Europe/Amsterdam' });
+      await bot.answerCallbackQuery(q.id, { text: 'Сброшено (только ты).' });
+      return bot.sendMessage(chatId, 'Твои данные сброшены. Нажми /start.');
     }
-    state.clear();
-    await bot.answerCallbackQuery(q.id, { text: 'Полный сброс.' });
-    return bot.sendMessage(q.message.chat.id, 'Глобальный сброс выполнен. Нажмите /start.');
+    
+    if (data === 'admin:reset_all') {
+      if (String(q.from.id) !== ADMIN_ID) {
+        return bot.answerCallbackQuery(q.id, { text: 'Нет прав' });
+      }
+      state.clear();
+      await bot.answerCallbackQuery(q.id, { text: 'Полный сброс.' });
+      return bot.sendMessage(q.message.chat.id, 'Глобальный сброс выполнен. Нажмите /start.');
+    }
+
+  } catch (e) {
+    console.error('CQ error:', e);
   }
 });
 
@@ -718,8 +733,8 @@ app.listen(PORT, '0.0.0.0', async () => {
     // ставим новую привязку с секретом и нужными типами апдейтов
     console.log('Setting new webhook...');
     const result = await bot.setWebHook(hookUrl, {
-      allowed_updates: ['message', 'callback_query'],
       secret_token: SECRET,  // Telegram пришлёт этот заголовок
+      allowed_updates: ['message', 'callback_query'],
       drop_pending_updates: true
     });
     console.log('Webhook set result:', result);
