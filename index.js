@@ -11,6 +11,10 @@ if (!TOKEN || !BASE) throw new Error("Нет BOT_TOKEN или WEBHOOK_URL");
 
 const app = express();
 app.use(express.json());
+app.use((req, _res, next) => {        // ЛОГИРУЕМ все запросы
+  console.log('HTTP', req.method, req.url);
+  next();
+});
 
 const bot = new TelegramBot(TOKEN, { webHook: { autoOpen: false } });
 
@@ -18,6 +22,7 @@ const hookPath = `/bot${TOKEN}`;
 const hookUrl = `${BASE}${hookPath}`;
 
 app.post(hookPath, (req, res) => {
+  console.log('Update:', req.body?.update_id, req.body?.message?.text);
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
