@@ -352,7 +352,7 @@ bot.on('message', (msg) => {
   }
 });
 
-bot.onText(/^\/start$/, (msg) => {
+bot.onText(/^\/start$/, async (msg) => {
   const u = ensureUser(msg.chat.id);
   if (!u.plan) {
     const answers = {
@@ -375,6 +375,7 @@ bot.onText(/^\/start$/, (msg) => {
     parse_mode: 'HTML', 
     reply_markup: mainKb 
   });
+  await ensureHubMessage(bot, ensureUser(msg.chat.id), 'home');
   // Можно сразу спросить про креатин:
   // askCreatine(msg.chat.id);
 });
