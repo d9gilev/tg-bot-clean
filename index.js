@@ -422,6 +422,21 @@ bot.on('message', async (msg) => {
     return bot.sendMessage(u.chatId, foodSummaryToday(u.chatId, u.tz));
   }
 
+  // Кнопка "🛠 Админ"
+  if (t === '🛠 Админ') {
+    if (String(msg.from.id) !== (process.env.ADMIN_ID || '').trim()) {
+      return bot.sendMessage(msg.chat.id, 'Недостаточно прав.');
+    }
+    return bot.sendMessage(msg.chat.id, 'Админ-панель', {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '♻️ Сброс МЕНЯ', callback_data: 'admin:reset_me' },
+          { text: '🔥 Сброс ВСЁ',  callback_data: 'admin:reset_all' }
+        ]]
+      }
+    });
+  }
+
   // Любой свободный текст (если ждём отчёт) → отправляем в GPT
   if (expectingReport.has(msg.chat.id)) {
     // игнорируем нажатия по меню
