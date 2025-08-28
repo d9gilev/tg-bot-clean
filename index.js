@@ -54,6 +54,17 @@ const setUser = (chatId, patch) => {
   return db.users[chatId];
 };
 
+function resetUserData(chatId){
+  db.food = db.food.filter(f => f.chatId !== chatId);
+  db.users[chatId] = { chatId, name: null, tz: 'Europe/Amsterdam', plan: null, reminder_mode: 'Soft' };
+}
+function resetAllData(){
+  db.food = [];
+  db.users = {};
+  db.workouts = [];
+  sentFlags = {};
+}
+
 // === UI (экраны/хаб) ===
 const getUI = (u) => { u.ui ??= {}; return u.ui; };
 
@@ -206,7 +217,7 @@ function hhmm(date, tz){ return new Date(date).toLocaleTimeString('ru-RU',{timeZ
 function todayStr(date, tz){ return new Date(date).toLocaleDateString('ru-RU',{timeZone:tz}); }
 
 // простая антидубли-метка «что уже отправляли сегодня»
-const sentFlags = {}; // key = chatId|date|kind
+let sentFlags = {}; // key = chatId|date|kind
 function markSent(chatId, dateKey, kind){ sentFlags[`${chatId}|${dateKey}|${kind}`]=true; }
 function wasSent(chatId, dateKey, kind){ return !!sentFlags[`${chatId}|${dateKey}|${kind}`]; }
 
@@ -545,6 +556,24 @@ bot.on('callback_query', async (q) => {
 
   await ensureHubMessage(bot, u, screen);
   try { await bot.answerCallbackQuery(q.id); } catch {}
+});
+
+// Обработчик админ-функций
+bot.on('callback_query', async (q) => {
+  const data = q.data || '';
+  
+  if (data === 'admin:reset_me') {
+    if (String(q.from.id) !== (process.env.ADMIN_ID || '').trim()) return bot.answerCallbackQuery(q.id, { text: 'Нет прав' });
+    resetUserData(q.message.chat.id);
+    await bot.answerCallbackQuery(q.id, { text: 'Сброшено (только ты).' });
+    return bot.sendMessage(q.message.chat.id, 'Твои данные сброшены. Нажми /start для начала.');
+  }
+  if (data === 'admin:reset_all') {
+    if (String(q.from.id) !== (process.env.ADMIN_ID || '').trim()) return bot.answerCallbackQuery(q.id, { text: 'Нет прав' });
+    resetAllData();
+    await bot.answerCallbackQuery(q.id, { text: 'Полный сброс.' });
+    return bot.sendMessage(q.message.chat.id, 'Глобальный сброс выполнен. Нажмите /start.');
+  }
 });
 
 // === HTTP-маршруты ===
