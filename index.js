@@ -29,40 +29,49 @@ const safeSend = (chatId, text, opts) =>
     console.error('sendMessage error:', err?.response?.body || err);
   });
 
-// === БАЗА ДАННЫХ (в памяти для MVP) ===
-const db = { 
-  users: {}, 
-  food: [], 
-  workouts: [] 
-};
+// ==== SETTINGS ====
+const DAY_LIMIT_MEALS = 4;
+const TZ = process.env.TZ || 'Europe/Amsterdam'; // можно поменять на свой
 
-const ensureUser = (chatId) => {
-  if (!db.users[chatId]) {
-    db.users[chatId] = { 
-      chatId, 
-      name: null, 
-      tz: "Europe/Amsterdam", 
-      plan: null, 
-      reminder_mode: "Soft" 
-    };
-  }
-  return db.users[chatId];
-};
-
-const setUser = (chatId, patch) => {
-  db.users[chatId] = { ...(db.users[chatId] || {}), ...patch };
-  return db.users[chatId];
-};
-
-function resetUserData(chatId){
-  db.food = db.food.filter(f => f.chatId !== chatId);
-  db.users[chatId] = { chatId, name: null, tz: 'Europe/Amsterdam', plan: null, reminder_mode: 'Soft' };
+// ==== RUNTIME STATE (in-memory MVP) ====
+// В проде заменим на БД. Сейчас — простая Map в памяти.
+const state = new Map(); // chatId -> { mealsByDate: { [dayKey]: { list: Meal[] } }, awaitingMeal: boolean, homeMsgId?: number }
+function getUser(chatId) {
+  if (!state.has(chatId)) state.set(chatId, { mealsByDate: {}, awaitingMeal: false, homeMsgId: null });
+  return state.get(chatId);
 }
-function resetAllData(){
-  db.food = [];
-  db.users = {};
-  db.workouts = [];
-  sentFlags = {};
+
+// Дата-сутки по TZ: 'YYYY-MM-DD'
+function dayKeyNow() {
+  const now = new Date();
+  const iso = new Date(now.toLocaleString('en-US', { timeZone: TZ }));
+  const y = iso.getFullYear();
+  const m = String(iso.getMonth() + 1).padStart(2, '0');
+  const d = String(iso.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+// Мини-анализ еды (плейсхолдер; позже подключим GPT)
+function mealFeedback(text) {
+  const t = (text || '').toLowerCase();
+  const tips = [];
+
+  if (/(омлет|яйц)/.test(t)) tips.push('Отлично: есть белок.');
+  if (/(кур|индей|рыб|творог|сыр|йогурт|говя)/.test(t)) tips.push('Белок ок — держим темп.');
+  if (/(салат|овощ|зелень|буряк|шпинат|огурц|помидор)/.test(t)) tips.push('Овощи — супер для объёма и клетчатки.');
+  if (/(жарен|фритюр|булк|слад|печен|кекс|торт|сода|кола|фаст)/.test(t)) tips.push('Много быстрых углей/жира — на следующем приёме сбалансируй белком/овощами.');
+  if (/(пицц|суши|бургер|шаурм)/.test(t)) tips.push('Ок изредка; постарайся добавить белок и овощи.');
+  if (!/(кур|рыб|творог|омлет|яйц|говя|индей|сыр|йогурт)/.test(t)) tips.push('В этом приёме мало явного белка — добавь 20–40 г в следующий.');
+
+  // не больше 2–3 пунктов
+  return 'Фидбэк: ' + tips.slice(0, 3).join(' ');
+}
+
+// Текущий «сегодняшний» прогресс
+function getMealsToday(user) {
+  const key = dayKeyNow();
+  if (!user.mealsByDate[key]) user.mealsByDate[key] = { list: [] };
+  return user.mealsByDate[key];
 }
 
 // === UI (экраны/хаб) ===
@@ -350,18 +359,75 @@ const welcomeText = (u) => {
   );
 };
 
-// === КЛАВИАТУРА ГЛАВНОГО МЕНЮ ===
+// ==== KEYBOARDS ====
+// Постоянное главное меню
 const mainKb = {
-  keyboard: [
-    [{ text: "📅 План" }, { text: "📝 Отчёт" }],
-    [{ text: "🍽️ Еда" }, { text: "💧 +250 мл" }],
-    [{ text: "🧭 Анкета" }, { text: "👤 Профиль" }],
-    [{ text: "📊 Итоги дня" }, { text: "🛠 Админ" }],
-    [{ text: "❓ Помощь" }]
-  ],
-  resize_keyboard: true,
-  is_persistent: true
+  reply_markup: {
+    keyboard: [
+      [{ text: '📅 План' }, { text: '🍽️ Еда' }],
+      [{ text: '📝 Отчёт' }, { text: '📊 Итоги дня' }],
+      [{ text: '🏠 Главная' }]
+    ],
+    resize_keyboard: true,
+    is_persistent: true // просим держать меню постоянно
+  }
 };
+
+// Временная клавиатура-сигнал "готово/отмена" при вводе еды
+const doneKb = {
+  reply_markup: {
+    keyboard: [[{ text: '✅ Готово' }], [{ text: '↩️ Отмена' }]],
+    resize_keyboard: true,
+    one_time_keyboard: true // спрячется после нажатия
+  }
+};
+
+// Текст «дома» с динамическим лимитом
+function homeText(user, profile = {}) {
+  const mealsToday = getMealsToday(user).list.length;
+  const left = Math.max(0, DAY_LIMIT_MEALS - mealsToday);
+
+  // Можешь подставлять kcal/prt/water/days, когда они появятся в профиле
+  const kcal = profile.kcal || '…';
+  const prt = profile.prt || '…';
+  const water = profile.water || '…';
+  const days = profile.days || '…';
+
+  return [
+    'Привет, я Павел — твой персональный тренер! 💪',
+    '',
+    `Я собираю план, считаю ${kcal}, даю чёткие задания и пинаю, когда надо. Основа — ВОЗ/ACSM и лучшие практики.`,
+    'Ты тренируешься — я думаю за тебя.',
+    '',
+    'Что внутри:',
+    `• Силовые ${days}×/нед + кардио Z2.`,
+    `• Питание: ${kcal}, белок ${prt}.`,
+    `• Вода: ~${water} мл, сон ⩾ 7 ч.`,
+    '• Напоминания вовремя и честный фидбэк после каждой сессии.',
+    '',
+    `🍽️ Лимит еды на сегодня: ${mealsToday}/${DAY_LIMIT_MEALS}`,
+    '',
+    'Поехали? Нажимай ниже 👇'
+  ].join('\n');
+}
+
+// Отправить/обновить «дом»
+async function sendOrUpdateHome(bot, chatId, profile) {
+  const user = getUser(chatId);
+  const text = homeText(user, profile);
+
+  if (user.homeMsgId) {
+    try {
+      await bot.editMessageText(text, { chat_id: chatId, message_id: user.homeMsgId, ...mainKb });
+      return;
+    } catch (e) {
+      // если старое сообщение нельзя отредактировать — пришлём новое
+      user.homeMsgId = null;
+    }
+  }
+  const msg = await bot.sendMessage(chatId, text, mainKb);
+  user.homeMsgId = msg.message_id;
+}
 
 // === ХЕНДЛЕРЫ ===
 // Включает «режим ожидания отчёта»
@@ -544,6 +610,24 @@ bot.onText(/^📝 Отчёт$/, (msg)=>{
 });
 
 bot.onText(/^\/whoami$/, (msg) => bot.sendMessage(msg.chat.id, `ID: ${msg.from.id}`));
+
+// Задай ADMIN_ID в .env (числовой chat_id)
+function isAdmin(chatId) {
+  return process.env.ADMIN_ID && String(chatId) === String(process.env.ADMIN_ID);
+}
+
+bot.onText(/^\/admin_reset$/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return;
+  state.clear();
+  await bot.sendMessage(chatId, 'Админ: весь локальный стейт сброшен.');
+});
+
+bot.onText(/^\/admin_stats$/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdmin(chatId)) return;
+  await bot.sendMessage(chatId, `Активных чатов в памяти: ${state.size}`);
+});
 
 // Обработчик нажатий по вкладкам
 bot.on('callback_query', async (q) => {
