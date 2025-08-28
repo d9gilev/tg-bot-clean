@@ -146,6 +146,21 @@ const ensureHubMessage = async (bot, u, screen = 'home') => {
   }
 };
 
+// === FOOD HELPERS ===
+function mealsCountToday(chatId, tz = "Europe/Amsterdam") {
+  const today = new Date().toLocaleDateString("ru-RU", { timeZone: tz });
+  return db.food.filter(f => f.chatId === chatId &&
+    new Date(f.ts).toLocaleDateString("ru-RU",{ timeZone: tz }) === today).length;
+}
+function addFood(chatId, entry) { db.food.push({ chatId, ...entry }); }
+function foodSummaryToday(chatId, tz="Europe/Amsterdam") {
+  const today = new Date().toLocaleDateString("ru-RU", { timeZone: tz });
+  const items = db.food.filter(f => f.chatId===chatId &&
+    new Date(f.ts).toLocaleDateString("ru-RU",{timeZone:tz})===today);
+  if (!items.length) return "Сегодня записей по еде нет.";
+  return items.map((f,i)=>`${i+1}. ${f.text ? f.text : "фото"} — ${new Date(f.ts).toLocaleTimeString("ru-RU",{timeZone:tz, hour:'2-digit', minute:'2-digit'})}`).join("\n");
+}
+
 // === МИНИ-ОНБОРДИНГ ===
 const ONB_QUESTIONS = [
   { key:"name",         type:"text",   q:"Как к тебе обращаться?" },
@@ -313,6 +328,30 @@ bot.on('message', (msg) => {
       `Вода: ~${u.plan.water_goal_ml} мл, сон ⩾ ${u.plan.sleep_goal_h} ч`
     );
     return;
+  }
+
+  // Кнопка "🍽️ Еда" → подсказка
+  if (t === "🍽️ Еда") {
+    const u = ensureUser(msg.chat.id);
+    return bot.sendMessage(u.chatId, `Пришли описание или скрин одним сообщением.\nЛимит сегодня: ${u.plan?.meals_limit ?? 4}.`);
+  }
+
+  // Приём еды: фото+подпись ИЛИ текст, начинающийся с "Еда:"
+  if (msg.photo || (t && /^Еда:/i.test(t))) {
+    const u = ensureUser(msg.chat.id);
+    const used = mealsCountToday(u.chatId, u.tz);
+    const limit = u.plan?.meals_limit ?? 4;
+    if (used >= limit) return bot.sendMessage(u.chatId, `Лимит на сегодня исчерпан (${limit}).`);
+
+    const fileId = msg.photo ? msg.photo.at(-1).file_id : null;
+    addFood(u.chatId, { ts: Date.now(), text: msg.caption || t || "", photo_file_id: fileId });
+    return bot.sendMessage(u.chatId, `Записал. Сегодня: ${used+1}/${limit}. Напиши: «📊 Итоги дня» — пришлю сводку.`);
+  }
+
+  // Кнопка/фраза «📊 Итоги дня»
+  if (t === "📊 Итоги дня") {
+    const u = ensureUser(msg.chat.id);
+    return bot.sendMessage(u.chatId, foodSummaryToday(u.chatId, u.tz));
   }
   
   // Обработка ответов анкеты
