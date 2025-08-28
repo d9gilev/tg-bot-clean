@@ -149,6 +149,9 @@ const ensureHubMessage = async (bot, u, screen = 'home') => {
   }
 };
 
+// ожидаем следующее сообщение как запись еды
+const expectingFood = new Set();
+
 // === FOOD HELPERS ===
 function mealsCountToday(chatId, tz = "Europe/Amsterdam") {
   const today = new Date().toLocaleDateString("ru-RU", { timeZone: tz });
@@ -342,6 +345,7 @@ const mainKb = {
     [{ text: "📅 План" }, { text: "📝 Отчёт" }],
     [{ text: "🍽️ Еда" }, { text: "💧 +250 мл" }],
     [{ text: "🧭 Анкета" }, { text: "👤 Профиль" }],
+    [{ text: "📊 Итоги дня" }, { text: "🛠 Админ" }],
     [{ text: "❓ Помощь" }]
   ],
   resize_keyboard: true,
@@ -357,6 +361,22 @@ bot.on('message', async (msg) => {
   if (!msg.text) return;
   
   const t = msg.text;
+  
+  // Если ждём запись еды — принять ЛЮБОЕ сообщение (текст/фото)
+  if (expectingFood.has(msg.chat.id)) {
+    const u = ensureUser(msg.chat.id);
+    const used = mealsCountToday(u.chatId, u.tz);
+    const limit = u.plan?.meals_limit ?? 4;
+    if (used >= limit) {
+      expectingFood.delete(msg.chat.id);
+      return bot.sendMessage(u.chat.id, `Лимит на сегодня исчерпан (${limit}).`);
+    }
+    const fileId = msg.photo ? msg.photo.at(-1).file_id : null;
+    const text = (msg.caption || t || '').replace(/^Еда\s*[:\-—]\s*/i,'').trim();
+    addFood(u.chatId, { ts: Date.now(), text, photo_file_id: fileId });
+    expectingFood.delete(msg.chat.id);
+    return bot.sendMessage(u.chatId, `Записал. Сегодня: ${used+1}/${limit}. Напиши: «📊 Итоги дня» — пришлю сводку.`);
+  }
   
   // Кнопка "📅 План"
   if (t === "📅 План") {
@@ -385,20 +405,16 @@ bot.on('message', async (msg) => {
   // Кнопка "🍽️ Еда" → подсказка
   if (t === "🍽️ Еда") {
     const u = ensureUser(msg.chat.id);
-    return bot.sendMessage(u.chatId, `Пришли описание или скрин одним сообщением.\nЛимит сегодня: ${u.plan?.meals_limit ?? 4}.`);
+    expectingFood.add(msg.chat.id);
+    return bot.sendMessage(
+      u.chatId,
+      `Пришли описание или скрин одним сообщением.
+(Можно начинать с «Еда: …», но не обязательно.)
+Лимит сегодня: ${u.plan?.meals_limit ?? 4}.`
+    );
   }
 
-  // Приём еды: фото+подпись ИЛИ текст, начинающийся с "Еда:"
-  if (msg.photo || (t && /^Еда:/i.test(t))) {
-    const u = ensureUser(msg.chat.id);
-    const used = mealsCountToday(u.chatId, u.tz);
-    const limit = u.plan?.meals_limit ?? 4;
-    if (used >= limit) return bot.sendMessage(u.chatId, `Лимит на сегодня исчерпан (${limit}).`);
 
-    const fileId = msg.photo ? msg.photo.at(-1).file_id : null;
-    addFood(u.chatId, { ts: Date.now(), text: msg.caption || t || "", photo_file_id: fileId });
-    return bot.sendMessage(u.chatId, `Записал. Сегодня: ${used+1}/${limit}. Напиши: «📊 Итоги дня» — пришлю сводку.`);
-  }
 
   // Кнопка/фраза «📊 Итоги дня»
   if (t === "📊 Итоги дня") {
@@ -541,46 +557,4 @@ app.listen(PORT, '0.0.0.0', async () => {
   });
   console.log('Webhook url:', hookUrl);
   console.log('Server listening on', PORT);
-});
-
-// === ПЛАНИРОВЩИК НАПОМИНАНИЙ ===
-// каждый минутный тик (cron "* * * * *")
-cron.schedule('* * * * *', async () => {
-  for (const chatId of Object.keys(db.users)) {
-    const u = ensureUser(chatId);
-    const tz = u.tz || 'Europe/Amsterdam';
-    const now = new Date();
-    const time = hhmm(now, tz);
-    const day  = todayStr(now, tz);
-
-    // 1) Утреннее напоминание о тренировке (08:30 ± ~10 мин)
-    if (!wasSent(u.chatId, day, 'morning') && /^08:3[0-9]$/.test(time)) {
-      if (isTrainingDay(u, now)) {
-        await safeSend(u.chatId, `Доброе утро! Сегодня тренировка по плану. Не забудь разминку и воду 💧`);
-        markSent(u.chatId, day, 'morning');
-      } else {
-        markSent(u.chatId, day, 'morning'); // помечаем, чтобы не беспокоить повторно
-      }
-    }
-
-    // 2) Вода — три напоминания днём (11:xx, 14:xx, 17:xx) с джиттером (любая минута «3x» прокатит)
-    if (!wasSent(u.chatId, day, 'water11') && /^11:[0-5][0-9]$/.test(time)) {
-      await safeSend(u.chatId, `💧 Водичка-чек: сделай пару глотков.`);
-      markSent(u.chatId, day, 'water11');
-    }
-    if (!wasSent(u.chatId, day, 'water14') && /^14:[0-5][0-9]$/.test(time)) {
-      await safeSend(u.chatId, `💧 Микропауза и вода — поехали.`);
-      markSent(u.chatId, day, 'water14');
-    }
-    if (!wasSent(u.chatId, day, 'water17') && /^17:[0-5][0-9]$/.test(time)) {
-      await safeSend(u.chatId, `💧 Добей норму воды сегодня — ты на финише дня.`);
-      markSent(u.chatId, day, 'water17');
-    }
-
-    // 3) Споки — 23:00 ± 10 мин (любой 23:0x)
-    if (!wasSent(u.chatId, day, 'goodnight') && /^23:0[0-9]$/.test(time)) {
-      await safeSend(u.chatId, `😴 Споки. Завтра продолжаем. (Если выжался в ленте — это не считается отдыхом 😉)`);
-      markSent(u.chatId, day, 'goodnight');
-    }
-  }
 });
