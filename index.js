@@ -46,7 +46,19 @@ const TZ = process.env.TZ || 'Europe/Amsterdam'; // можно поменять 
 // В проде заменим на БД. Сейчас — простая Map в памяти.
 const state = new Map(); // chatId -> { mealsByDate: { [dayKey]: { list: Meal[] } }, awaitingMeal: boolean, homeMsgId?: number }
 function getUser(chatId) {
-  if (!state.has(chatId)) state.set(chatId, { mealsByDate: {}, awaitingMeal: false, homeMsgId: null, tz: process.env.TZ || 'Europe/Amsterdam' });
+  if (!state.has(chatId)) {
+    state.set(chatId, {
+      chatId,                 // <<< ВАЖНО: сохраняем chatId
+      mealsByDate: {},
+      awaitingMeal: false,
+      homeMsgId: null,
+      tz: process.env.TZ || 'Europe/Amsterdam'
+    });
+  } else {
+    // если объект уже есть, но chatId в нём отсутствует — допишем
+    const u = state.get(chatId);
+    if (!u.chatId) u.chatId = chatId;
+  }
   return state.get(chatId);
 }
 
@@ -156,14 +168,15 @@ const renderScreen = (u, screen = 'home') => {
   };
 };
 
-const ensureHubMessage = async (bot, u, screen = 'home') => {
-  const ui = getUI(u);
+async function ensureHubMessage(bot, chatId, screen = 'home') {
+  const u  = getUser(chatId);
+  const ui = u.ui ?? (u.ui = {});
   const { html, kb } = renderScreen(u, screen);
 
   if (ui.hubMessageId) {
     try {
       await bot.editMessageText(html, {
-        chat_id: u.chatId,
+        chat_id: assertChatId(chatId),                 // <<< используем ПАРАМЕТР
         message_id: ui.hubMessageId,
         parse_mode: 'HTML',
         reply_markup: kb
@@ -171,18 +184,15 @@ const ensureHubMessage = async (bot, u, screen = 'home') => {
       ui.activeScreen = screen;
       return;
     } catch (e) {
-      console.warn('editMessageText failed, resend hub:', e?.response?.body || e.message);
       ui.hubMessageId = null; // переотправим ниже
     }
   }
 
-  const sent = await bot.sendMessage(u.chatId, html, { parse_mode: 'HTML', reply_markup: kb });
+  const sent = await bot.sendMessage(assertChatId(chatId), html, { parse_mode:'HTML', reply_markup: kb });
   ui.hubMessageId = sent.message_id;
   ui.activeScreen = screen;
-  try { await bot.pinChatMessage(u.chatId, sent.message_id); } catch (e) {
-    console.log('pinChatMessage skipped:', e?.response?.body || e.message);
-  }
-};
+  try { await bot.pinChatMessage(assertChatId(chatId), sent.message_id); } catch {}
+}
 
 // УДАЛЕНО: expectingFood - теперь используется user.awaitingMeal в state Map
 
@@ -446,15 +456,21 @@ async function sendOrUpdateHome(bot, chatId, profile) {
       user.homeMsgId = null;
     }
   }
-  const msg = await bot.sendMessage(chatId, text, mainKb);
+  const msg = await bot.sendMessage(assertChatId(chatId), text, mainKb);
   user.homeMsgId = msg.message_id;
+}
+
+// Проверка chat_id
+function assertChatId(x) {
+  if (!x) throw new Error('chat_id is empty (guard)');
+  return x;
 }
 
 // Удаляем служебные сообщения (чистим чат)
 async function tryDelete(bot, chatId, msgIdToDelete, keepId) {
   try {
     if (msgIdToDelete && msgIdToDelete !== keepId) {
-      await bot.deleteMessage(chatId, msgIdToDelete);
+      await bot.deleteMessage(assertChatId(chatId), msgIdToDelete);
     }
   } catch (_) {}
 }
@@ -477,20 +493,20 @@ bot.on('message', async (msg) => {
     const limit = u.plan?.meals_limit ?? 4;
     if (used >= limit) {
       getUser(msg.chat.id).awaitingMeal = false;
-      return bot.sendMessage(u.chat.id, `Лимит на сегодня исчерпан (${limit}).`);
+      return bot.sendMessage(assertChatId(u.chatId), `Лимит на сегодня исчерпан (${limit}).`);
     }
     const fileId = msg.photo ? msg.photo.at(-1).file_id : null;
     const text = (msg.caption || t || '').replace(/^Еда\s*[:\-—]\s*/i,'').trim();
     addFood(u.chatId, { ts: Date.now(), text, photo_file_id: fileId });
     getUser(msg.chat.id).awaitingMeal = false;
-    return bot.sendMessage(u.chatId, `Записал. Сегодня: ${used+1}/${limit}. Напиши: «📊 Итоги дня» — пришлю сводку.`);
+    return bot.sendMessage(assertChatId(u.chatId), `Записал. Сегодня: ${used+1}/${limit}. Напиши: «📊 Итоги дня» — пришлю сводку.`);
   }
   
   // Кнопка "📅 План"
   if (t === "📅 План") {
     const u = ensureUser(msg.chat.id);
     if (!u.plan) {
-      return bot.sendMessage(u.chatId, "Сначала пройди «🧭 Анкета» — соберу план за 2 минуты.");
+      return bot.sendMessage(assertChatId(u.chatId), "Сначала пройди «🧭 Анкета» — соберу план за 2 минуты.");
     }
 
     const start = new Date(u.plan_start);
@@ -498,7 +514,7 @@ bot.on('message', async (msg) => {
     const days  = u.plan.days_per_week;
     const scheme = u.plan.workouts.join(" · ");
 
-    bot.sendMessage(u.chatId,
+    bot.sendMessage(assertChatId(u.chatId),
       `Твой план (30 дней)\n` +
       `Период: ${start.toLocaleDateString()} — ${end.toLocaleDateString()}\n` +
       `Цель: ${u.plan.goal}\n` +
@@ -527,7 +543,7 @@ bot.on('message', async (msg) => {
   // Кнопка/фраза «📊 Итоги дня»
   if (t === "📊 Итоги дня") {
     const u = ensureUser(msg.chat.id);
-    return bot.sendMessage(u.chatId, foodSummaryToday(u.chatId, u.tz));
+    return bot.sendMessage(assertChatId(u.chatId), foodSummaryToday(u.chatId, u.tz));
   }
 
   // Кнопка "🛠 Админ"
@@ -559,7 +575,7 @@ bot.on('message', async (msg) => {
         plan: u.plan || {},
         report: t
       });
-      await bot.sendMessage(u.chatId, fb);
+      await bot.sendMessage(assertChatId(u.chatId), fb);
       return;
     }
   }
@@ -585,7 +601,7 @@ bot.on('message', async (msg) => {
       Object.assign(u, { ...built, name: st.answers.name || u.name || msg.from.first_name });
 
       delete onbState[msg.chat.id];
-      bot.sendMessage(u.chatId,
+      bot.sendMessage(assertChatId(u.chatId),
         `План готов ✅\n\n` +
         `Цель: ${built.plan.goal}\n` +
         `Тренировок/нед: ${built.plan.days_per_week} (${built.plan.session_length})\n` +
@@ -624,11 +640,11 @@ bot.onText(/^\/start$/, async (msg) => {
     Object.assign(u, { ...built, name: u.name || msg.from.first_name });
   }
   const user = ensureUser(msg.chat.id);
-  bot.sendMessage(msg.chat.id, welcomeText(user), { 
+  bot.sendMessage(assertChatId(msg.chat.id), welcomeText(user), { 
     parse_mode: 'HTML', 
     reply_markup: mainKb 
   });
-  await ensureHubMessage(bot, ensureUser(msg.chat.id), 'home');
+  await ensureHubMessage(bot, msg.chat.id, 'home');
   // Можно сразу спросить про креатин:
   // askCreatine(msg.chat.id);
 });
@@ -669,7 +685,8 @@ bot.on('callback_query', async (q) => {
 
     if (/^nav:(home|plan|food|reports|settings)$/.test(data)) {
       const screen = data.split(':')[1];
-      await ensureHubMessage(bot, ensureUser(q.message.chat.id), screen);
+      const chatId = q.message?.chat?.id || q.from.id; // если inline
+      await ensureHubMessage(bot, chatId, screen);
       return bot.answerCallbackQuery(q.id); // гасим "часики"
     }
 
@@ -677,11 +694,16 @@ bot.on('callback_query', async (q) => {
       if (String(q.from.id) !== ADMIN_ID) {
         return bot.answerCallbackQuery(q.id, { text: 'Нет прав' });
       }
-      const chatId = q.message.chat.id;
-      // сброс ТОЛЬКО этого пользователя:
-      state.set(chatId, { mealsByDate: {}, awaitingMeal: false, homeMsgId: null, tz: process.env.TZ || 'Europe/Amsterdam' });
+      const chatId = q.message?.chat?.id || q.from.id; // на случай inline
+      state.set(chatId, {
+        chatId,                         // <<< НЕ теряем chatId
+        mealsByDate: {},
+        awaitingMeal: false,
+        homeMsgId: null,
+        tz: process.env.TZ || 'Europe/Amsterdam'
+      });
       await bot.answerCallbackQuery(q.id, { text: 'Сброшено (только ты).' });
-      return bot.sendMessage(chatId, 'Твои данные сброшены. Нажми /start.');
+      return bot.sendMessage(assertChatId(chatId), 'Твои данные сброшены. Нажми /start.');
     }
     
     if (data === 'admin:reset_all') {
