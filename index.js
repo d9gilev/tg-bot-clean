@@ -179,7 +179,29 @@ const ensureHubMessage = async (bot, u, screen = 'home') => {
 // УДАЛЕНО: expectingFood - теперь используется user.awaitingMeal в state Map
 
 // === FOOD HELPERS ===
-// УДАЛЕНО: старые функции db.food - теперь используется state Map
+// Заглушки для старого кода - используют новую систему state Map
+function mealsCountToday(chatId, tz = "Europe/Amsterdam") {
+  const user = getUser(chatId);
+  const today = getMealsToday(user);
+  return today.list.length;
+}
+
+function addFood(chatId, entry) {
+  const user = getUser(chatId);
+  const today = getMealsToday(user);
+  const timestamp = new Date().toLocaleTimeString('ru-RU', { timeZone: TZ, hour: '2-digit', minute: '2-digit' });
+  today.list.push({ 
+    text: entry.text || (entry.photo_file_id ? '(Фото/скрин)' : '(без текста)'), 
+    time: timestamp 
+  });
+}
+
+function foodSummaryToday(chatId, tz="Europe/Amsterdam") {
+  const user = getUser(chatId);
+  const today = getMealsToday(user);
+  if (!today.list.length) return "Сегодня записей по еде нет.";
+  return today.list.map((m, i) => `${i + 1}) ${m.time} — ${m.text}`).join('\n');
+}
 
 // === AI FEEDBACK ===
 async function coachFeedbackOneSentence({ name, goal, plan, report }) {
@@ -542,7 +564,7 @@ bot.on('message', async (msg) => {
       // анкета готова → создаём план
       const built = createPlanFromAnswers(st.answers);
       const u = ensureUser(msg.chat.id);
-      setUser(u.chatId, { ...built, name: st.answers.name || u.name || msg.from.first_name });
+      Object.assign(u, { ...built, name: st.answers.name || u.name || msg.from.first_name });
 
       delete onbState[msg.chat.id];
       bot.sendMessage(u.chatId,
@@ -577,7 +599,7 @@ bot.onText(/^\/start$/, async (msg) => {
       dislikes: u.dislikes || []
     };
     const built = createPlanFromAnswers(answers);
-    setUser(u.chatId, { ...built, name: u.name || msg.from.first_name });
+    Object.assign(u, { ...built, name: u.name || msg.from.first_name });
   }
   const user = ensureUser(msg.chat.id);
   bot.sendMessage(msg.chat.id, welcomeText(user), { 
