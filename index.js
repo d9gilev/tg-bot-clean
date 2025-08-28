@@ -27,35 +27,28 @@ const safeSend = (chatId, text, opts) =>
   });
 
 // === БАЗА ДАННЫХ (в памяти для MVP) ===
-const db = {
-  users: {},
-  foods: {},
-  workouts: {}
+const db = { 
+  users: {}, 
+  food: [], 
+  workouts: [] 
 };
 
 const ensureUser = (chatId) => {
   if (!db.users[chatId]) {
-    db.users[chatId] = {
-      chatId,
-      name: null,
-      plan: null,
-      sex: null,
-      age: null,
-      weight_kg: null,
-      height_cm: null,
-      steps_level: null,
-      goal: null,
-      days_per_week: null,
-      session_length: null,
-      equipment: [],
-      dislikes: []
+    db.users[chatId] = { 
+      chatId, 
+      name: null, 
+      tz: "Europe/Amsterdam", 
+      plan: null, 
+      reminder_mode: "Soft" 
     };
   }
   return db.users[chatId];
 };
 
-const setUser = (chatId, data) => {
-  db.users[chatId] = { ...db.users[chatId], ...data };
+const setUser = (chatId, patch) => {
+  db.users[chatId] = { ...(db.users[chatId] || {}), ...patch };
+  return db.users[chatId];
 };
 
 // === ФУНКЦИИ ДЛЯ ПЛАНОВ ===
