@@ -517,6 +517,8 @@ bot.onText(/^📝 Отчёт$/, (msg)=>{
   bot.sendMessage(msg.chat.id, "Опиши тренировку одним сообщением (можно фото + подпись).");
 });
 
+bot.onText(/^\/whoami$/, (msg) => bot.sendMessage(msg.chat.id, `ID: ${msg.from.id}`));
+
 // Обработчик нажатий по вкладкам
 bot.on('callback_query', async (q) => {
   const data = q.data || '';
