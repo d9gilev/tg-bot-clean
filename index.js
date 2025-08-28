@@ -11,6 +11,7 @@ const BASE   = process.env.WEBHOOK_URL;     // https://…up.railway.app
 const PATH   = process.env.WH_PATH;         // напр. "/tg/ab12cd34"
 const SECRET = process.env.WH_SECRET;       // напр. "s3cr3t_XYZ"
 const PORT   = Number(process.env.PORT || 8080);
+const ADMIN_ID = (process.env.ADMIN_ID || '').trim();
 
 if (!TOKEN || !BASE || !PATH || !SECRET) {
   throw new Error('ENV missing: BOT_TOKEN / WEBHOOK_URL / WH_PATH / WH_SECRET');
@@ -72,6 +73,12 @@ function getMealsToday(user) {
   const key = dayKeyNow();
   if (!user.mealsByDate[key]) user.mealsByDate[key] = { list: [] };
   return user.mealsByDate[key];
+}
+
+// === Back-compat alias: старый код вызывает ensureUser(...) ===
+function ensureUser(chatId) {
+  // используй новый сторедж
+  return getUser(chatId);
 }
 
 // === UI (экраны/хаб) ===
@@ -169,23 +176,10 @@ const ensureHubMessage = async (bot, u, screen = 'home') => {
   }
 };
 
-// ожидаем следующее сообщение как запись еды
-const expectingFood = new Set();
+// УДАЛЕНО: expectingFood - теперь используется user.awaitingMeal в state Map
 
 // === FOOD HELPERS ===
-function mealsCountToday(chatId, tz = "Europe/Amsterdam") {
-  const today = new Date().toLocaleDateString("ru-RU", { timeZone: tz });
-  return db.food.filter(f => f.chatId === chatId &&
-    new Date(f.ts).toLocaleDateString("ru-RU",{ timeZone: tz }) === today).length;
-}
-function addFood(chatId, entry) { db.food.push({ chatId, ...entry }); }
-function foodSummaryToday(chatId, tz="Europe/Amsterdam") {
-  const today = new Date().toLocaleDateString("ru-RU", { timeZone: tz });
-  const items = db.food.filter(f => f.chatId===chatId &&
-    new Date(f.ts).toLocaleDateString("ru-RU",{timeZone:tz})===today);
-  if (!items.length) return "Сегодня записей по еде нет.";
-  return items.map((f,i)=>`${i+1}. ${f.text ? f.text : "фото"} — ${new Date(f.ts).toLocaleTimeString("ru-RU",{timeZone:tz, hour:'2-digit', minute:'2-digit'})}`).join("\n");
-}
+// УДАЛЕНО: старые функции db.food - теперь используется state Map
 
 // === AI FEEDBACK ===
 async function coachFeedbackOneSentence({ name, goal, plan, report }) {
@@ -225,10 +219,7 @@ function isTrainingDay(u, date){
 function hhmm(date, tz){ return new Date(date).toLocaleTimeString('ru-RU',{timeZone:tz,hour:'2-digit',minute:'2-digit',hour12:false}); }
 function todayStr(date, tz){ return new Date(date).toLocaleDateString('ru-RU',{timeZone:tz}); }
 
-// простая антидубли-метка «что уже отправляли сегодня»
-let sentFlags = {}; // key = chatId|date|kind
-function markSent(chatId, dateKey, kind){ sentFlags[`${chatId}|${dateKey}|${kind}`]=true; }
-function wasSent(chatId, dateKey, kind){ return !!sentFlags[`${chatId}|${dateKey}|${kind}`]; }
+// УДАЛЕНО: sentFlags - больше не используется в новой архитектуре
 
 // небольшой джиттер (±10 минут)
 function jitter(baseMinutes = 0, span = 10){ return baseMinutes + Math.floor((Math.random()*2-1)*span); }
@@ -609,24 +600,22 @@ bot.onText(/^📝 Отчёт$/, (msg)=>{
   bot.sendMessage(msg.chat.id, "Опиши тренировку одним сообщением (можно фото + подпись).");
 });
 
-bot.onText(/^\/whoami$/, (msg) => bot.sendMessage(msg.chat.id, `ID: ${msg.from.id}`));
-
-// Задай ADMIN_ID в .env (числовой chat_id)
-function isAdmin(chatId) {
-  return process.env.ADMIN_ID && String(chatId) === String(process.env.ADMIN_ID);
-}
-
-bot.onText(/^\/admin_reset$/, async (msg) => {
-  const chatId = msg.chat.id;
-  if (!isAdmin(chatId)) return;
-  state.clear();
-  await bot.sendMessage(chatId, 'Админ: весь локальный стейт сброшен.');
+// Узнать свой numeric id (временная утилита)
+bot.onText(/^\/whoami$/, (msg) => {
+  bot.sendMessage(msg.chat.id, `ID: ${msg.from.id}`);
 });
 
+// Полный сброс всего in-memory стейта (РАЗРАБОТЧИК)
+bot.onText(/^\/admin_reset$/, async (msg) => {
+  if (String(msg.from.id) !== ADMIN_ID) return bot.sendMessage(msg.chat.id, 'Нет прав');
+  state.clear();
+  await bot.sendMessage(msg.chat.id, 'Админ: весь локальный стейт сброшен. Нажми /start.');
+});
+
+// Простейшая статистика
 bot.onText(/^\/admin_stats$/, async (msg) => {
-  const chatId = msg.chat.id;
-  if (!isAdmin(chatId)) return;
-  await bot.sendMessage(chatId, `Активных чатов в памяти: ${state.size}`);
+  if (String(msg.from.id) !== ADMIN_ID) return bot.sendMessage(msg.chat.id, 'Нет прав');
+  await bot.sendMessage(msg.chat.id, `Активных чатов в памяти: ${state.size}`);
 });
 
 // Обработчик нажатий по вкладкам
@@ -646,15 +635,22 @@ bot.on('callback_query', async (q) => {
 bot.on('callback_query', async (q) => {
   const data = q.data || '';
   
-  if (data === 'admin:reset_me') {
-    if (String(q.from.id) !== (process.env.ADMIN_ID || '').trim()) return bot.answerCallbackQuery(q.id, { text: 'Нет прав' });
-    resetUserData(q.message.chat.id);
+  if ((q.data || '') === 'admin:reset_me') {
+    if (String(q.from.id) !== ADMIN_ID) {
+      return bot.answerCallbackQuery(q.id, { text: 'Нет прав' });
+    }
+    const chatId = q.message.chat.id;
+    // сброс ТОЛЬКО этого пользователя:
+    state.set(chatId, { mealsByDate: {}, awaitingMeal: false, homeMsgId: null, tz: process.env.TZ || 'Europe/Amsterdam' });
     await bot.answerCallbackQuery(q.id, { text: 'Сброшено (только ты).' });
-    return bot.sendMessage(q.message.chat.id, 'Твои данные сброшены. Нажми /start для начала.');
+    return bot.sendMessage(chatId, 'Твои данные сброшены. Нажми /start.');
   }
-  if (data === 'admin:reset_all') {
-    if (String(q.from.id) !== (process.env.ADMIN_ID || '').trim()) return bot.answerCallbackQuery(q.id, { text: 'Нет прав' });
-    resetAllData();
+
+  if ((q.data || '') === 'admin:reset_all') {
+    if (String(q.from.id) !== ADMIN_ID) {
+      return bot.answerCallbackQuery(q.id, { text: 'Нет прав' });
+    }
+    state.clear();
     await bot.answerCallbackQuery(q.id, { text: 'Полный сброс.' });
     return bot.sendMessage(q.message.chat.id, 'Глобальный сброс выполнен. Нажмите /start.');
   }
