@@ -386,6 +386,19 @@ bot.onText(/^🧭 Анкета$/, (msg) => {
   askNext(msg.chat.id);
 });
 
+// Обработчик нажатий по вкладкам
+bot.on('callback_query', async (q) => {
+  const data = q.data || '';
+  const m = data.match(/^nav:(home|plan|food|reports|settings)$/);
+  if (!m) return;
+
+  const screen = m[1];
+  const u = ensureUser(q.message.chat.id);
+
+  await ensureHubMessage(bot, u, screen);
+  try { await bot.answerCallbackQuery(q.id); } catch {}
+});
+
 // === HTTP-маршруты ===
 app.use((req, _res, next) => { console.log('HTTP', req.method, req.url); next(); });
 
