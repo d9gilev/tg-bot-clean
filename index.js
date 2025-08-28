@@ -2,6 +2,8 @@
 require('dotenv').config();
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
+const OpenAI = require("openai");
+const oa = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const TOKEN  = process.env.BOT_TOKEN;
 const BASE   = process.env.WEBHOOK_URL;     // https://…up.railway.app
@@ -161,6 +163,25 @@ function foodSummaryToday(chatId, tz="Europe/Amsterdam") {
   return items.map((f,i)=>`${i+1}. ${f.text ? f.text : "фото"} — ${new Date(f.ts).toLocaleTimeString("ru-RU",{timeZone:tz, hour:'2-digit', minute:'2-digit'})}`).join("\n");
 }
 
+// === AI FEEDBACK ===
+async function coachFeedbackOneSentence({ name, goal, plan, report }) {
+  try {
+    const resp = await oa.responses.create({
+      model: "gpt-4o-mini",
+      temperature: 0.4,
+      max_output_tokens: 120,
+      input: [
+        { role: "system", content: "Ты поддерживающий, но честный фитнес-тренер/нутриционист. Дай РОВНО одно предложение: похвали, укажи 1–2 корректировки к следующей сессии. Без мед. советов." },
+        { role: "user", content: `Имя: ${name}\nЦель: ${goal}\nПлан: ккал ~${plan?.daily_kcal}, белок ${plan?.protein_g_per_kg} г/кг, тренировки ${plan?.days_per_week}×/нед.\nОтчёт: ${report}` }
+      ]
+    });
+    return resp.output_text?.trim() || "Принял отчёт.";
+  } catch (e) {
+    console.error("GPT error:", e?.response?.data || e);
+    return "Принял отчёт. Продолжай!";
+  }
+}
+
 // === МИНИ-ОНБОРДИНГ ===
 const ONB_QUESTIONS = [
   { key:"name",         type:"text",   q:"Как к тебе обращаться?" },
@@ -300,7 +321,10 @@ const mainKb = {
 };
 
 // === ХЕНДЛЕРЫ ===
-bot.on('message', (msg) => {
+// Включает «режим ожидания отчёта»
+const expectingReport = new Set();
+
+bot.on('message', async (msg) => {
   console.log('Handler saw message:', msg.message_id, msg.text);
   if (!msg.text) return;
   
@@ -352,6 +376,25 @@ bot.on('message', (msg) => {
   if (t === "📊 Итоги дня") {
     const u = ensureUser(msg.chat.id);
     return bot.sendMessage(u.chatId, foodSummaryToday(u.chatId, u.tz));
+  }
+
+  // Любой свободный текст (если ждём отчёт) → отправляем в GPT
+  if (expectingReport.has(msg.chat.id)) {
+    // игнорируем нажатия по меню
+    if (["📅 План","🍽️ Еда","💧 +250 мл","🧭 Анкета","👤 Профиль","❓ Помощь","/start","📊 Итоги дня"].includes(t)) {
+      // не выходим из режима, просто игнор
+    } else {
+      expectingReport.delete(msg.chat.id);
+      const u = ensureUser(msg.chat.id);
+      const fb = await coachFeedbackOneSentence({
+        name: u.name || msg.from.first_name,
+        goal: u.plan?.goal || "Поддержание здоровья и самочувствия",
+        plan: u.plan || {},
+        report: t
+      });
+      await bot.sendMessage(u.chatId, fb);
+      return;
+    }
   }
   
   // Обработка ответов анкеты
@@ -423,6 +466,11 @@ bot.onText(/^\/start$/, async (msg) => {
 bot.onText(/^🧭 Анкета$/, (msg) => {
   onbState[msg.chat.id] = { i:0, answers:{} };
   askNext(msg.chat.id);
+});
+
+bot.onText(/^📝 Отчёт$/, (msg)=>{
+  expectingReport.add(msg.chat.id);
+  bot.sendMessage(msg.chat.id, "Опиши тренировку одним сообщением (можно фото + подпись).");
 });
 
 // Обработчик нажатий по вкладкам
