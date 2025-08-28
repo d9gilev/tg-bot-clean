@@ -13,6 +13,9 @@ const SECRET = process.env.WH_SECRET;       // напр. "s3cr3t_XYZ"
 const PORT   = Number(process.env.PORT || 8080);
 const ADMIN_ID = (process.env.ADMIN_ID || '').trim();
 
+// === COMPAT for old food-flow ===
+// УДАЛЕНО: expectingFood - теперь используется user.awaitingMeal в state Map
+
 if (!TOKEN || !BASE || !PATH || !SECRET) {
   throw new Error('ENV missing: BOT_TOKEN / WEBHOOK_URL / WH_PATH / WH_SECRET');
 }
@@ -38,7 +41,7 @@ const TZ = process.env.TZ || 'Europe/Amsterdam'; // можно поменять 
 // В проде заменим на БД. Сейчас — простая Map в памяти.
 const state = new Map(); // chatId -> { mealsByDate: { [dayKey]: { list: Meal[] } }, awaitingMeal: boolean, homeMsgId?: number }
 function getUser(chatId) {
-  if (!state.has(chatId)) state.set(chatId, { mealsByDate: {}, awaitingMeal: false, homeMsgId: null });
+  if (!state.has(chatId)) state.set(chatId, { mealsByDate: {}, awaitingMeal: false, homeMsgId: null, tz: process.env.TZ || 'Europe/Amsterdam' });
   return state.get(chatId);
 }
 
@@ -76,10 +79,7 @@ function getMealsToday(user) {
 }
 
 // === Back-compat alias: старый код вызывает ensureUser(...) ===
-function ensureUser(chatId) {
-  // используй новый сторедж
-  return getUser(chatId);
-}
+function ensureUser(chatId) { return getUser(chatId); }
 
 // === UI (экраны/хаб) ===
 const getUI = (u) => { u.ui ??= {}; return u.ui; };
@@ -431,18 +431,18 @@ bot.on('message', async (msg) => {
   const t = msg.text;
   
   // Если ждём запись еды — принять ЛЮБОЕ сообщение (текст/фото)
-  if (expectingFood.has(msg.chat.id)) {
+  if (getUser(msg.chat.id).awaitingMeal) {
     const u = ensureUser(msg.chat.id);
     const used = mealsCountToday(u.chatId, u.tz);
     const limit = u.plan?.meals_limit ?? 4;
     if (used >= limit) {
-      expectingFood.delete(msg.chat.id);
+      getUser(msg.chat.id).awaitingMeal = false;
       return bot.sendMessage(u.chat.id, `Лимит на сегодня исчерпан (${limit}).`);
     }
     const fileId = msg.photo ? msg.photo.at(-1).file_id : null;
     const text = (msg.caption || t || '').replace(/^Еда\s*[:\-—]\s*/i,'').trim();
     addFood(u.chatId, { ts: Date.now(), text, photo_file_id: fileId });
-    expectingFood.delete(msg.chat.id);
+    getUser(msg.chat.id).awaitingMeal = false;
     return bot.sendMessage(u.chatId, `Записал. Сегодня: ${used+1}/${limit}. Напиши: «📊 Итоги дня» — пришлю сводку.`);
   }
   
@@ -473,7 +473,7 @@ bot.on('message', async (msg) => {
   // Кнопка "🍽️ Еда" → подсказка
   if (t === "🍽️ Еда") {
     const u = ensureUser(msg.chat.id);
-    expectingFood.add(msg.chat.id);
+    getUser(msg.chat.id).awaitingMeal = true;
     return bot.sendMessage(
       u.chatId,
       `Пришли описание или скрин одним сообщением.
