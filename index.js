@@ -39,8 +39,21 @@ const safeSend = (chatId, text, opts) =>
   });
 
 // ==== SETTINGS ====
-const DAY_LIMIT_MEALS = 4;
+const DAY_LIMIT_MEALS = 4; // базовый лимит на день (перекусов)
 const TZ = process.env.TZ || 'Europe/Amsterdam'; // можно поменять на свой
+
+// если план у юзера задаёт лимит — берём его, иначе дефолт
+function limitMealsFor(user) {
+  const planLimit = user?.plan?.meals_limit;
+  return Number.isFinite(planLimit) && planLimit > 0 ? planLimit : DAY_LIMIT_MEALS;
+}
+
+// сегодня: объект с приёмами
+function getMealsToday(user) {
+  const key = dayKeyNow();
+  if (!user.mealsByDate[key]) user.mealsByDate[key] = { list: [] };
+  return user.mealsByDate[key];
+}
 
 // ==== RUNTIME STATE (in-memory MVP) ====
 // В проде заменим на БД. Сейчас — простая Map в памяти.
@@ -88,12 +101,7 @@ function mealFeedback(text) {
   return 'Фидбэк: ' + tips.slice(0, 3).join(' ');
 }
 
-// Текущий «сегодняшний» прогресс
-function getMealsToday(user) {
-  const key = dayKeyNow();
-  if (!user.mealsByDate[key]) user.mealsByDate[key] = { list: [] };
-  return user.mealsByDate[key];
-}
+// Удалено - функция перенесена выше
 
 // === Back-compat alias: старый код может звать ensureUser(...)
 function ensureUser(chatId) { return getUser(chatId); }
@@ -413,33 +421,38 @@ const doneKb = {
   }
 };
 
-// Текст «дома» с динамическим лимитом
 function homeText(user, profile = {}) {
   const mealsToday = getMealsToday(user).list.length;
-  const left = Math.max(0, DAY_LIMIT_MEALS - mealsToday);
+  const limit = limitMealsFor(user);
+  const left = Math.max(0, limit - mealsToday);
 
-  // Можешь подставлять kcal/prt/water/days, когда они появятся в профиле
-  const kcal = profile.kcal || '…';
-  const prt = profile.prt || '…';
+  const kcal  = profile.kcal  || '…';
+  const prt   = profile.prt   || '…';
   const water = profile.water || '…';
-  const days = profile.days || '…';
+  const days  = profile.days  || '…';
 
-  return [
+  const lines = [
     'Привет, я Павел — твой персональный тренер! 💪',
     '',
-    `Я собираю план, считаю ${kcal}, даю чёткие задания и пинаю, когда надо. Основа — ВОЗ/ACSM и лучшие практики.`,
-    'Ты тренируешься — я думаю за тебя.',
+    `Я собираю план, считаю ${kcal}, даю чёткие задания и пинаю, когда надо.`,
+    'Основа — ВОЗ/ACSM и лучшие практики. Ты тренируешься — я думаю за тебя.',
     '',
     'Что внутри:',
     `• Силовые ${days}×/нед + кардио Z2.`,
     `• Питание: ${kcal}, белок ${prt}.`,
     `• Вода: ~${water} мл, сон ⩾ 7 ч.`,
     '• Напоминания вовремя и честный фидбэк после каждой сессии.',
-    '',
-    `🍽️ Лимит еды на сегодня: ${mealsToday}/${DAY_LIMIT_MEALS}`,
-    '',
-    'Поехали? Нажимай ниже 👇'
-  ].join('\n');
+    ''
+  ];
+
+  if (left > 0) {
+    lines.push(`🍽️ Осталось перекусов: ${left}`);
+  } else {
+    lines.push('🍏 Еда на сегодня закончилась — съешь яблочко!');
+  }
+
+  lines.push('', 'Поехали? Нажимай ниже 👇');
+  return lines.join('\n');
 }
 
 // Отправить/обновить «дом»
@@ -486,20 +499,57 @@ bot.on('message', async (msg) => {
     
     console.log('Handler saw message:', msg.message_id, t);
   
-  // Если ждём запись еды — принять ЛЮБОЕ сообщение (текст/фото)
-  if (getUser(msg.chat.id).awaitingMeal) {
-    const u = ensureUser(msg.chat.id);
-    const used = mealsCountToday(u.chatId, u.tz);
-    const limit = u.plan?.meals_limit ?? 4;
-    if (used >= limit) {
-      getUser(msg.chat.id).awaitingMeal = false;
-      return bot.sendMessage(assertChatId(u.chatId), `Лимит на сегодня исчерпан (${limit}).`);
+  const u = getUser(msg.chat.id);
+
+  // завершение/отмена
+  if (t === '✅ Готово') {
+    u.awaitingMeal = false;
+    await sendOrUpdateHome(bot, msg.chat.id);
+    await bot.sendMessage(msg.chat.id, 'Готово! Возвращаю главное меню.', mainKb);
+    return;
+  }
+  if (t === '↩️ Отмена') {
+    u.awaitingMeal = false;
+    await bot.sendMessage(msg.chat.id, 'Отменил ввод. Возвращаюсь в главное меню.', mainKb);
+    return;
+  }
+
+  // если ждём еду — обрабатываем ввод
+  if (u.awaitingMeal) {
+    // соберём текст
+    let mealText = '';
+    if (msg.text) mealText = msg.text.trim();
+    if (!mealText && msg.caption) mealText = msg.caption.trim();
+    const hasPhoto = !!(msg.photo && msg.photo.length);
+
+    if (!mealText && !hasPhoto) return;
+
+    const today = getMealsToday(u);
+    const limit = limitMealsFor(u);
+
+    if (today.list.length >= limit) {
+      u.awaitingMeal = false;
+      await bot.sendMessage(msg.chat.id, '🍏 Еда на сегодня закончилась — съешь яблочко!', mainKb);
+      await sendOrUpdateHome(bot, msg.chat.id);
+      return;
     }
-    const fileId = msg.photo ? msg.photo.at(-1).file_id : null;
-    const text = (msg.caption || t || '').replace(/^Еда\s*[:\-—]\s*/i,'').trim();
-    addFood(u.chatId, { ts: Date.now(), text, photo_file_id: fileId });
-    getUser(msg.chat.id).awaitingMeal = false;
-    return bot.sendMessage(assertChatId(u.chatId), `Записал. Сегодня: ${used+1}/${limit}. Напиши: «📊 Итоги дня» — пришлю сводку.`);
+
+    // сохранить приём
+    const time = new Date().toLocaleTimeString('ru-RU', { timeZone: u.tz || TZ, hour: '2-digit', minute: '2-digit' });
+    today.list.push({ time, text: mealText || (hasPhoto ? '(Фото/скрин)' : '(без текста)') });
+
+    // быстрый фидбэк
+    await bot.sendMessage(msg.chat.id, mealFeedback(mealText));
+
+    // обновим «дом»
+    await sendOrUpdateHome(bot, msg.chat.id);
+
+    // если достигли лимита — закрываем режим и предлагаем итоги
+    if (today.list.length >= limit) {
+      u.awaitingMeal = false;
+      await bot.sendMessage(msg.chat.id, 'Ты заполнил(а) дневной лимит. Готов подвести «📊 Итоги дня»?', mainKb);
+    }
+    return;
   }
   
   // Кнопка "📅 План"
@@ -526,24 +576,62 @@ bot.on('message', async (msg) => {
     return;
   }
 
-  // Кнопка "🍽️ Еда" → подсказка
+  // Кнопка "🍽️ Еда" → проверяем лимит
   if (t === "🍽️ Еда") {
-    const u = ensureUser(msg.chat.id);
-    getUser(msg.chat.id).awaitingMeal = true;
-    return bot.sendMessage(
-      u.chatId,
-      `Пришли описание или скрин одним сообщением.
-(Можно начинать с «Еда: …», но не обязательно.)
-Лимит сегодня: ${u.plan?.meals_limit ?? 4}.`
+    const u = getUser(msg.chat.id);
+    const today = getMealsToday(u);
+    const limit = limitMealsFor(u);
+    const left  = Math.max(0, limit - today.list.length);
+
+    if (left <= 0) {
+      await bot.sendMessage(u.chatId || msg.chat.id, '🍏 Еда на сегодня закончилась — съешь яблочко!', mainKb);
+      await sendOrUpdateHome(bot, msg.chat.id);
+      return;
+    }
+
+    u.awaitingMeal = true;
+    await bot.sendMessage(
+      msg.chat.id,
+      `Пришли еду текстом (например: «омлет с сыром») или фото с подписью.\nОсталось перекусов: ${left}\nПосле завершения нажми «✅ Готово».`,
+      {
+        reply_markup: {
+          keyboard: [[{ text: '✅ Готово' }], [{ text: '↩️ Отмена' }]],
+          resize_keyboard: true,
+          one_time_keyboard: true
+        }
+      }
     );
+    return;
   }
 
 
 
   // Кнопка/фраза «📊 Итоги дня»
   if (t === "📊 Итоги дня") {
-    const u = ensureUser(msg.chat.id);
-    return bot.sendMessage(assertChatId(u.chatId), foodSummaryToday(u.chatId, u.tz));
+    const u = getUser(msg.chat.id);
+    const today = getMealsToday(u);
+    if (today.list.length === 0) {
+      await bot.sendMessage(msg.chat.id, 'Сегодня приёмов еды нет. Начни с «🍽️ Еда».', mainKb);
+      return;
+    }
+
+    const lines = today.list.map((m, i) => `${i + 1}) ${m.time} — ${m.text}`);
+    // простая оценка дня (как раньше)
+    const joined = today.list.map(m => m.text).join(' ').toLowerCase();
+    let grade = 'ОК';
+    if (/(торт|кекс|фаст|бургер|слад|кока|пицц)/.test(joined)) grade = 'Ниже цели';
+    if (/(салат|овощ|творог|кур|рыб|омлет|яйц|индей)/.test(joined)) grade = (grade === 'Ниже цели') ? 'Смешанно' : 'Отлично';
+
+    const summary = [
+      '📊 Итоги дня по еде:',
+      ...lines,
+      '',
+      `Оценка дня: ${grade}`,
+      'Рекомендация: держи белок 20–40 г в каждом приёме, добавляй овощи; сладкое — умеренно, лучше к тренировке.'
+    ].join('\n');
+
+    await bot.sendMessage(msg.chat.id, summary, mainKb);
+    return;
   }
 
   // Кнопка "🛠 Админ"
