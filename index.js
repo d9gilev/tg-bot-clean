@@ -17,6 +17,11 @@ const ADMIN_ID = (process.env.ADMIN_ID || '').trim();
 // УДАЛЕНО: expectingFood - теперь используется user.awaitingMeal в state Map
 
 if (!TOKEN || !BASE || !PATH || !SECRET) {
+  console.error('Missing ENV vars:');
+  console.error('BOT_TOKEN:', TOKEN ? 'OK' : 'MISSING');
+  console.error('WEBHOOK_URL:', BASE ? 'OK' : 'MISSING');
+  console.error('WH_PATH:', PATH ? 'OK' : 'MISSING');
+  console.error('WH_SECRET:', SECRET ? 'OK' : 'MISSING');
   throw new Error('ENV missing: BOT_TOKEN / WEBHOOK_URL / WH_PATH / WH_SECRET');
 }
 
@@ -695,14 +700,31 @@ app.get('/', (_req, res) => res.status(200).send('OK'));
 
 // === Старт и привязка вебхука ===
 app.listen(PORT, '0.0.0.0', async () => {
-  // на всякий случай сносим старую привязку
-  await fetch(`https://api.telegram.org/bot${TOKEN}/deleteWebhook`, { method: 'POST' });
-  // ставим новую привязку с секретом и нужными типами апдейтов
-  await bot.setWebHook(hookUrl, {
-    allowed_updates: ['message', 'callback_query'],
-    secret_token:     SECRET,  // Telegram пришлёт этот заголовок
-    drop_pending_updates: true
-  });
-  console.log('Webhook url:', hookUrl);
-  console.log('Server listening on', PORT);
+  console.log(`Server listening on ${PORT}`);
+  console.log('Webhook URL:', hookUrl);
+  console.log('SECRET length:', SECRET?.length || 0);
+  
+  // Проверяем SECRET токен
+  if (SECRET.length < 1 || SECRET.length > 256) {
+    console.error('SECRET token length must be 1-256 characters, got:', SECRET.length);
+    return;
+  }
+  
+  try {
+    // на всякий случай сносим старую привязку
+    console.log('Deleting old webhook...');
+    await fetch(`https://api.telegram.org/bot${TOKEN}/deleteWebhook`, { method: 'POST' });
+    
+    // ставим новую привязку с секретом и нужными типами апдейтов
+    console.log('Setting new webhook...');
+    const result = await bot.setWebHook(hookUrl, {
+      allowed_updates: ['message', 'callback_query'],
+      secret_token: SECRET,  // Telegram пришлёт этот заголовок
+      drop_pending_updates: true
+    });
+    console.log('Webhook set result:', result);
+  } catch (error) {
+    console.error('Webhook setup error:', error);
+    console.error('Error details:', error?.response?.body || error.message);
+  }
 });
