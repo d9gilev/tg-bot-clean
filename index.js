@@ -51,6 +51,101 @@ const setUser = (chatId, patch) => {
   return db.users[chatId];
 };
 
+// === UI (экраны/хаб) ===
+const getUI = (u) => { u.ui ??= {}; return u.ui; };
+
+const navKb = (active = 'home') => {
+  const b = (id, title) => ({ text: (active === id ? `• ${title}` : title), callback_data: `nav:${id}` });
+  return {
+    inline_keyboard: [
+      [b('home','🏠 Главная'), b('plan','📅 План')],
+      [b('food','🍽️ Еда'), b('reports','📝 Отчёты')],
+      [b('settings','⚙️ Настройки')]
+    ]
+  };
+};
+
+const renderScreen = (u, screen = 'home') => {
+  const p = u.plan || {};
+  if (screen === 'plan') {
+    const w = Array.isArray(p.workouts) ? p.workouts.join(' · ') : 'ещё нет';
+    return {
+      html:
+`<b>📅 Твой план на 30 дней</b>
+Цель: ${p.goal || '—'}
+Силовые: ${p.days_per_week || '—'}×/нед (${p.session_length || '—'})
+Схема: ${w}
+Питание: ~${p.daily_kcal || '—'} ккал/день, белок ${p.protein_g_per_kg || '1.6'} г/кг
+Вода: ~${p.water_goal_ml || 2200} мл, сон ⩾ ${p.sleep_goal_h || 7} ч`,
+      kb: navKb('plan')
+    };
+  }
+  if (screen === 'food') {
+    return {
+      html:
+`<b>🍽️ Еда</b>
+Лимит приёмов: ${(p.meals_limit ?? 4)}/день.
+Пришли скрин/описание одним сообщением — я сохраню и учту в дневной сводке.`,
+      kb: navKb('food')
+    };
+  }
+  if (screen === 'reports') {
+    return {
+      html:
+`<b>📝 Отчёты</b>
+Нажми «📝 Отчёт» внизу и пришли текст/фото — я отвечу <i>одним, но ёмким</i> предложением (ИИ).`,
+      kb: navKb('reports')
+    };
+  }
+  if (screen === 'settings') {
+    const creatine = p.creatine_ok === true ? 'Да' : (p.creatine_ok === false ? 'Нет' : 'Не выбрано');
+    return {
+      html:
+`<b>⚙️ Настройки</b>
+— Режим пинков: ${u.reminder_mode || 'Soft'}
+— TZ: ${u.tz || 'Europe/Amsterdam'}
+— Креатин: ${creatine}`,
+      kb: navKb('settings')
+    };
+  }
+  // home
+  return {
+    html:
+`<b>🏠 Главная</b>
+Здесь будут напоминания (вода/тренировка) и «споки».
+Выбирай экран ниже: план, еда, отчёты, настройки.`,
+    kb: navKb('home')
+  };
+};
+
+const ensureHubMessage = async (bot, u, screen = 'home') => {
+  const ui = getUI(u);
+  const { html, kb } = renderScreen(u, screen);
+
+  if (ui.hubMessageId) {
+    try {
+      await bot.editMessageText(html, {
+        chat_id: u.chatId,
+        message_id: ui.hubMessageId,
+        parse_mode: 'HTML',
+        reply_markup: kb
+      });
+      ui.activeScreen = screen;
+      return;
+    } catch (e) {
+      console.warn('editMessageText failed, resend hub:', e?.response?.body || e.message);
+      ui.hubMessageId = null; // переотправим ниже
+    }
+  }
+
+  const sent = await bot.sendMessage(u.chatId, html, { parse_mode: 'HTML', reply_markup: kb });
+  ui.hubMessageId = sent.message_id;
+  ui.activeScreen = screen;
+  try { await bot.pinChatMessage(u.chatId, sent.message_id); } catch (e) {
+    console.log('pinChatMessage skipped:', e?.response?.body || e.message);
+  }
+};
+
 // === МИНИ-ОНБОРДИНГ ===
 const ONB_QUESTIONS = [
   { key:"name",         type:"text",   q:"Как к тебе обращаться?" },
