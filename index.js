@@ -4,6 +4,7 @@ const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const OpenAI = require("openai");
 const oa = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const cron = require('node-cron');
 
 const TOKEN  = process.env.BOT_TOKEN;
 const BASE   = process.env.WEBHOOK_URL;     // https://…up.railway.app
@@ -181,6 +182,33 @@ async function coachFeedbackOneSentence({ name, goal, plan, report }) {
     return "Принял отчёт. Продолжай!";
   }
 }
+
+// === REMINDERS HELPERS ===
+// равномерное распределение тренировок по неделе (очень грубо, MVP)
+function trainingDaysFor(u){
+  const d = u.plan?.days_per_week || 3;
+  if (d === 2) return [1,4];           // Пн, Чт
+  if (d === 3) return [1,3,5];         // Пн, Ср, Пт
+  if (d === 4) return [1,2,4,6];       // Пн, Вт, Чт, Сб
+  return [1,3,5]; // дефолт
+}
+function isTrainingDay(u, date){
+  const dow = Number(new Intl.DateTimeFormat('ru-RU',{weekday:'short', timeZone:u.tz||'Europe/Amsterdam'})
+    .formatToParts(date).find(p=>p.type==='weekday')?.value ? date.getDay() : date.getDay());
+  // JS: 0=Вс..6=Сб; приведём к 1=Пн..7=Вс
+  const norm = (date.getUTCDay()+6)%7 + 1;
+  return trainingDaysFor(u).includes(norm);
+}
+function hhmm(date, tz){ return new Date(date).toLocaleTimeString('ru-RU',{timeZone:tz,hour:'2-digit',minute:'2-digit',hour12:false}); }
+function todayStr(date, tz){ return new Date(date).toLocaleDateString('ru-RU',{timeZone:tz}); }
+
+// простая антидубли-метка «что уже отправляли сегодня»
+const sentFlags = {}; // key = chatId|date|kind
+function markSent(chatId, dateKey, kind){ sentFlags[`${chatId}|${dateKey}|${kind}`]=true; }
+function wasSent(chatId, dateKey, kind){ return !!sentFlags[`${chatId}|${dateKey}|${kind}`]; }
+
+// небольшой джиттер (±10 минут)
+function jitter(baseMinutes = 0, span = 10){ return baseMinutes + Math.floor((Math.random()*2-1)*span); }
 
 // === МИНИ-ОНБОРДИНГ ===
 const ONB_QUESTIONS = [
@@ -513,4 +541,46 @@ app.listen(PORT, '0.0.0.0', async () => {
   });
   console.log('Webhook url:', hookUrl);
   console.log('Server listening on', PORT);
+});
+
+// === ПЛАНИРОВЩИК НАПОМИНАНИЙ ===
+// каждый минутный тик (cron "* * * * *")
+cron.schedule('* * * * *', async () => {
+  for (const chatId of Object.keys(db.users)) {
+    const u = ensureUser(chatId);
+    const tz = u.tz || 'Europe/Amsterdam';
+    const now = new Date();
+    const time = hhmm(now, tz);
+    const day  = todayStr(now, tz);
+
+    // 1) Утреннее напоминание о тренировке (08:30 ± ~10 мин)
+    if (!wasSent(u.chatId, day, 'morning') && /^08:3[0-9]$/.test(time)) {
+      if (isTrainingDay(u, now)) {
+        await safeSend(u.chatId, `Доброе утро! Сегодня тренировка по плану. Не забудь разминку и воду 💧`);
+        markSent(u.chatId, day, 'morning');
+      } else {
+        markSent(u.chatId, day, 'morning'); // помечаем, чтобы не беспокоить повторно
+      }
+    }
+
+    // 2) Вода — три напоминания днём (11:xx, 14:xx, 17:xx) с джиттером (любая минута «3x» прокатит)
+    if (!wasSent(u.chatId, day, 'water11') && /^11:[0-5][0-9]$/.test(time)) {
+      await safeSend(u.chatId, `💧 Водичка-чек: сделай пару глотков.`);
+      markSent(u.chatId, day, 'water11');
+    }
+    if (!wasSent(u.chatId, day, 'water14') && /^14:[0-5][0-9]$/.test(time)) {
+      await safeSend(u.chatId, `💧 Микропауза и вода — поехали.`);
+      markSent(u.chatId, day, 'water14');
+    }
+    if (!wasSent(u.chatId, day, 'water17') && /^17:[0-5][0-9]$/.test(time)) {
+      await safeSend(u.chatId, `💧 Добей норму воды сегодня — ты на финише дня.`);
+      markSent(u.chatId, day, 'water17');
+    }
+
+    // 3) Споки — 23:00 ± 10 мин (любой 23:0x)
+    if (!wasSent(u.chatId, day, 'goodnight') && /^23:0[0-9]$/.test(time)) {
+      await safeSend(u.chatId, `😴 Споки. Завтра продолжаем. (Если выжался в ленте — это не считается отдыхом 😉)`);
+      markSent(u.chatId, day, 'goodnight');
+    }
+  }
 });
