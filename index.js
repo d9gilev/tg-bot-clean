@@ -51,6 +51,60 @@ const setUser = (chatId, patch) => {
   return db.users[chatId];
 };
 
+// === МИНИ-ОНБОРДИНГ ===
+const ONB_QUESTIONS = [
+  { key:"name",         type:"text",   q:"Как к тебе обращаться?" },
+  { key:"sex",          type:"single", q:"Пол:", opts:["М","Ж"] },
+  { key:"age",          type:"number", q:"Возраст (лет):", min:14, max:90 },
+  { key:"height_cm",    type:"number", q:"Рост (см):",     min:130, max:220 },
+  { key:"weight_kg",    type:"number", q:"Вес (кг):",      min:35,  max:250 },
+  { key:"steps_level",  type:"single", q:"Средняя активность (шагов/день):", opts:["<5k","5–8k","8–11k",">11k"] },
+  { key:"goal",         type:"single", q:"Главная цель:", opts:["Похудение","Набор мышечной массы","Поддержание здоровья и самочувствия","Увеличение производительности"] },
+  { key:"days_per_week",type:"number", q:"Сколько тренировок в неделю?", min:1, max:6 },
+  { key:"session_length",type:"single", q:"Длительность одной тренировки:", opts:["60 мин","75 мин","90 мин"] },
+  { key:"equipment",    type:"text",   q:"Где/что доступно? Введи через запятую из списка:\nДом, Зал, Улица, Штанга, Гантели, Тренажёры, Турник, Эспандеры, Дорожка/вело, Бассейн" },
+  { key:"dislikes",     type:"text",   q:"Что НЕ нравится/не подходит? (через запятую)" }
+];
+
+const onbState = {}; // per chat: {i, answers}
+
+const askNext = (chatId) => {
+  const st = onbState[chatId];
+  const step = ONB_QUESTIONS[st.i];
+  if (!step) return;
+  if (step.type === "single") {
+    bot.sendMessage(chatId, step.q, { 
+      reply_markup: { 
+        keyboard: [step.opts.map(o=>({text:o}))], 
+        resize_keyboard:true, 
+        one_time_keyboard:true 
+      } 
+    });
+  } else {
+    bot.sendMessage(chatId, step.q, { 
+      reply_markup: { remove_keyboard: true } 
+    });
+  }
+};
+
+const validate = (step, text) => {
+  if (step.type==="number"){
+    const n = Number((text||"").replace(",","."));
+    if (Number.isNaN(n)) return { ok:false, err:"Нужна цифра." };
+    if (step.min && n < step.min) return { ok:false, err:`Минимум ${step.min}.` };
+    if (step.max && n > step.max) return { ok:false, err:`Максимум ${step.max}.` };
+    return { ok:true, val:n };
+  }
+  if (step.type==="single"){
+    if (!step.opts.includes(text)) return { ok:false, err:"Выбери из кнопок ниже." };
+    return { ok:true, val:text };
+  }
+  // text
+  const v = (text||"").trim();
+  if (!v) return { ok:false, err:"Напиши ответ текстом." };
+  return { ok:true, val:v };
+};
+
 // === ГЕНЕРАТОР ПЛАНА ===
 const mifflinStJeor = ({ sex, weight, height, age }) => {
   const s = (sex === "М" || sex === "M") ? 5 : -161;
@@ -138,7 +192,69 @@ const mainKb = {
 // === ХЕНДЛЕРЫ ===
 bot.on('message', (msg) => {
   console.log('Handler saw message:', msg.message_id, msg.text);
-  // Убрал эхо - не засоряем чат
+  if (!msg.text) return;
+  
+  const t = msg.text;
+  
+  // Кнопка "📅 План"
+  if (t === "📅 План") {
+    const u = ensureUser(msg.chat.id);
+    if (!u.plan) {
+      return bot.sendMessage(u.chatId, "Сначала пройди «🧭 Анкета» — соберу план за 2 минуты.");
+    }
+
+    const start = new Date(u.plan_start);
+    const end   = new Date(u.plan_end);
+    const days  = u.plan.days_per_week;
+    const scheme = u.plan.workouts.join(" · ");
+
+    bot.sendMessage(u.chatId,
+      `Твой план (30 дней)\n` +
+      `Период: ${start.toLocaleDateString()} — ${end.toLocaleDateString()}\n` +
+      `Цель: ${u.plan.goal}\n` +
+      `Силовые: ${days}×/нед (${u.plan.session_length}), схема: ${scheme}\n` +
+      `Кардио: Z2 по 20–30 мин 2–3×/нед (после силовой)\n` +
+      `Питание: ~${u.plan.daily_kcal} ккал/день, белок ${u.plan.protein_g_per_kg} г/кг\n` +
+      `Вода: ~${u.plan.water_goal_ml} мл, сон ⩾ ${u.plan.sleep_goal_h} ч`
+    );
+    return;
+  }
+  
+  // Обработка ответов анкеты
+  const st = onbState[msg.chat.id];
+  if (st) {
+    const step = ONB_QUESTIONS[st.i];
+    if (!step) return;
+
+    const { ok, err, val } = validate(step, msg.text);
+    if (!ok) return bot.sendMessage(msg.chat.id, err);
+
+    st.answers[step.key] = val;
+    st.i += 1;
+
+    if (st.i < ONB_QUESTIONS.length) {
+      askNext(msg.chat.id);
+    } else {
+      // анкета готова → создаём план
+      const built = createPlanFromAnswers(st.answers);
+      const u = ensureUser(msg.chat.id);
+      setUser(u.chatId, { ...built, name: st.answers.name || u.name || msg.from.first_name });
+
+      delete onbState[msg.chat.id];
+      bot.sendMessage(u.chatId,
+        `План готов ✅\n\n` +
+        `Цель: ${built.plan.goal}\n` +
+        `Тренировок/нед: ${built.plan.days_per_week} (${built.plan.session_length})\n` +
+        `Ккал/день: ~${built.plan.daily_kcal}\n` +
+        `Белок: ${built.plan.protein_g_per_kg} г/кг\n` +
+        `Вода: ~${built.plan.water_goal_ml} мл\n` +
+        `Сон: ⩾${built.plan.sleep_goal_h} ч\n` +
+        `Схема силовых: ${built.plan.workouts.join(" · ")}`,
+        { reply_markup: mainKb }
+      );
+    }
+    return;
+  }
 });
 
 bot.onText(/^\/start$/, (msg) => {
@@ -166,6 +282,12 @@ bot.onText(/^\/start$/, (msg) => {
   });
   // Можно сразу спросить про креатин:
   // askCreatine(msg.chat.id);
+});
+
+// Старт анкеты
+bot.onText(/^🧭 Анкета$/, (msg) => {
+  onbState[msg.chat.id] = { i:0, answers:{} };
+  askNext(msg.chat.id);
 });
 
 // === HTTP-маршруты ===
