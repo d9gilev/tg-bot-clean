@@ -160,9 +160,7 @@ const mainKb = {
 // === ХЕНДЛЕРЫ ===
 bot.on('message', (msg) => {
   console.log('Handler saw message:', msg.message_id, msg.text);
-  if (msg.text && !/^\/start$/.test(msg.text)) {
-    safeSend(msg.chat.id, `Эхо: ${msg.text}`);
-  }
+  // Убрал эхо - не засоряем чат
 });
 
 bot.onText(/^\/start$/, (msg) => {
@@ -184,10 +182,12 @@ bot.onText(/^\/start$/, (msg) => {
     setUser(u.chatId, { ...built, name: u.name || msg.from.first_name });
   }
   const user = ensureUser(msg.chat.id);
-  safeSend(msg.chat.id, welcomeText(user), { 
-    reply_markup: mainKb,
-    parse_mode: 'HTML'
+  bot.sendMessage(msg.chat.id, welcomeText(user), { 
+    parse_mode: 'HTML', 
+    reply_markup: mainKb 
   });
+  // Можно сразу спросить про креатин:
+  // askCreatine(msg.chat.id);
 });
 
 // === HTTP-маршруты ===
