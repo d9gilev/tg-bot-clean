@@ -51,66 +51,50 @@ const setUser = (chatId, patch) => {
   return db.users[chatId];
 };
 
-// === ФУНКЦИИ ДЛЯ ПЛАНОВ ===
-const mifflinStJeor = (sex, age, weight, height) => {
-  const bmr = sex === 'М' ? 
-    10 * weight + 6.25 * height - 5 * age + 5 :
-    10 * weight + 6.25 * height - 5 * age - 161;
-  return Math.round(bmr);
+// === ГЕНЕРАТОР ПЛАНА ===
+const mifflinStJeor = ({ sex, weight, height, age }) => {
+  const s = (sex === "М" || sex === "M") ? 5 : -161;
+  return Math.round(10 * weight + 6.25 * height - 5 * age + s); // RMR
 };
 
-const palFromSteps = (steps) => {
-  const stepMap = {
-    'менее 5k': 1.2,
-    '5–8k': 1.375,
-    '8–10k': 1.55,
-    '10k+': 1.725
+const palFromSteps = (steps_level) => { 
+  return {"<5k":1.3,"5–8k":1.45,"8–11k":1.6,">11k":1.75}[steps_level] || 1.4; 
+};
+
+const kcalByGoal = (tdee, goal) => { 
+  if(goal==="Похудение") return Math.round(tdee*0.85); 
+  if(goal==="Набор мышечной массы") return Math.round(tdee*1.10); 
+  return Math.round(tdee); 
+};
+
+const defaultWorkouts = (days) => { 
+  const map={2:["Full Body A","Full Body B"],3:["Upper","Lower","Full"],4:["Upper","Lower","Push","Pull"]}; 
+  return map[days]||map[3]; 
+};
+
+const createPlanFromAnswers = (a) => {
+  const rmr  = mifflinStJeor({ sex:a.sex, weight:+a.weight_kg||70, height:+a.height_cm||170, age:+a.age||30 });
+  const tdee = Math.round(rmr * palFromSteps(a.steps_level));
+  const daily_kcal = kcalByGoal(tdee, a.goal);
+
+  const plan = {
+    goal: a.goal,
+    days_per_week: +a.days_per_week || 3,
+    session_length: a.session_length || "60 мин",
+    equipment: Array.isArray(a.equipment) ? a.equipment : String(a.equipment||"").split(",").map(s=>s.trim()).filter(Boolean),
+    dislikes: Array.isArray(a.dislikes) ? a.dislikes : String(a.dislikes||"").split(",").map(s=>s.trim()).filter(Boolean),
+    daily_kcal,
+    protein_g_per_kg: 1.6,
+    meals_limit: 4,
+    water_goal_ml: 2200,
+    sleep_goal_h: 7,
+    workouts: defaultWorkouts(+a.days_per_week || 3), // типы сессий
+    goodnight_window: "23:00±10m",
+    creatine_ok: a.creatine_ok ?? null
   };
-  return stepMap[steps] || 1.375;
-};
 
-const kcalByGoal = (tdee, goal) => {
-  const goalMap = {
-    'Похудение': 0.85,
-    'Поддержание здоровья и самочувствия': 1.0,
-    'Набор мышечной массы': 1.15
-  };
-  return Math.round(tdee * (goalMap[goal] || 1.0));
-};
-
-const defaultWorkouts = (days, equipment) => {
-  const workouts = [];
-  const hasWeights = equipment.includes('гантели') || equipment.includes('штанга');
-  
-  for (let i = 1; i <= days; i++) {
-    workouts.push({
-      day: i,
-      type: i % 2 === 0 ? 'кардио' : 'силовая',
-      exercises: hasWeights ? 
-        ['Приседания', 'Жим лежа', 'Становая тяга'] :
-        ['Отжимания', 'Приседания', 'Планка'],
-      duration: '45-60 мин'
-    });
-  }
-  return workouts;
-};
-
-const createPlanFromAnswers = (answers) => {
-  const bmr = mifflinStJeor(answers.sex, answers.age, answers.weight_kg, answers.height_cm);
-  const pal = palFromSteps(answers.steps_level);
-  const tdee = Math.round(bmr * pal);
-  const daily_kcal = kcalByGoal(tdee, answers.goal);
-  const protein_g_per_kg = answers.goal === 'Набор мышечной массы' ? 2.0 : 1.6;
-  
-  return {
-    plan: {
-      daily_kcal,
-      protein_g_per_kg,
-      workouts: defaultWorkouts(answers.days_per_week, answers.equipment),
-      goal: answers.goal,
-      days_per_week: answers.days_per_week
-    }
-  };
+  const start = new Date(); const end = new Date(); end.setDate(start.getDate()+30);
+  return { plan, plan_start: start.toISOString(), plan_end: end.toISOString(), plan_status:"active" };
 };
 
 // === ПРОДАЮЩЕЕ ПРИВЕТСТВИЕ ===
