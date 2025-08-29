@@ -405,10 +405,10 @@ const mainKb = {
     keyboard: [
       [{ text: '📅 План' }, { text: '🍽️ Еда' }],
       [{ text: '📝 Отчёт' }, { text: '📊 Итоги дня' }],
-      [{ text: '🏠 Главная' }]
+      [{ text: '🧭 Анкета' }, { text: '🏠 Главная' }]
     ],
     resize_keyboard: true,
-    is_persistent: true // просим держать меню постоянно
+    is_persistent: true
   }
 };
 
@@ -634,6 +634,12 @@ bot.on('message', async (msg) => {
     return;
   }
 
+  // Кнопка "🏠 Главная"
+  if (t === "🏠 Главная") {
+    await sendOrUpdateHome(bot, msg.chat.id);
+    return;
+  }
+
   // Кнопка "🛠 Админ"
   if (t === '🛠 Админ') {
     if (String(msg.from.id) !== (process.env.ADMIN_ID || '').trim()) {
@@ -652,7 +658,7 @@ bot.on('message', async (msg) => {
   // Любой свободный текст (если ждём отчёт) → отправляем в GPT
   if (expectingReport.has(msg.chat.id)) {
     // игнорируем нажатия по меню
-    if (["📅 План","🍽️ Еда","💧 +250 мл","🧭 Анкета","👤 Профиль","❓ Помощь","/start","📊 Итоги дня"].includes(t)) {
+    if (["📅 План","🍽️ Еда","💧 +250 мл","🧭 Анкета","🏠 Главная","👤 Профиль","❓ Помощь","/start","📊 Итоги дня"].includes(t)) {
       // не выходим из режима, просто игнор
     } else {
       expectingReport.delete(msg.chat.id);
