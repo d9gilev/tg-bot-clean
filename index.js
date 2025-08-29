@@ -1123,3 +1123,31 @@ app.listen(PORT, '0.0.0.0', async () => {
     console.error('Error details:', error?.response?.body || error.message);
   }
 });
+
+// ===== Мини-тест: проверяем инлайн-кнопки и снятие нижней клавиатуры =====
+bot.onText(/^\/oktest$/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  // 1) Уберём нижнюю реплай-клавиатуру (чтобы не мешала визуально)
+  await bot.sendMessage(chatId, 'Убираю нижние кнопки...', {
+    reply_markup: { remove_keyboard: true }
+  });
+
+  // 2) Пошлём СООБЩЕНИЕ С ИНЛАЙН-КЛАВИАТУРОЙ "ОК ✅"
+  await bot.sendMessage(chatId, 'Это интро-блок. Готов продолжить?', {
+    reply_markup: {
+      inline_keyboard: [[{ text: 'ОК ✅', callback_data: 'oktest:ok' }]]
+    }
+  });
+});
+
+// Ловим клики по инлайн-кнопкам
+bot.on('callback_query', async (q) => {
+  // Для отладки видно в логах Railway:
+  console.log('CQ:', q.data);
+
+  if (q.data === 'oktest:ok') {
+    await bot.answerCallbackQuery(q.id, { text: 'Поехали!' });
+    await bot.sendMessage(q.message.chat.id, 'Клик пришёл. Инлайн-кнопки работают ✅');
+  }
+});
