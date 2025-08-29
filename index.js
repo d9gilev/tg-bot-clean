@@ -6,6 +6,10 @@ const OpenAI = require("openai");
 const oa = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const cron = require('node-cron');
 
+// 1) Импортируем модуль анкеты
+const onboarding = require('./src/onboarding-max');
+const { registerOnboarding, startOnboarding } = onboarding;
+
 const TOKEN  = process.env.BOT_TOKEN;
 const BASE   = process.env.WEBHOOK_URL;     // https://…up.railway.app
 const PATH   = process.env.WH_PATH;         // напр. "/tg/ab12cd34"
@@ -73,37 +77,18 @@ bot.onText(/^\/menu$/, async (msg) => {
   await showMainMenu(chatId);
 });
 
-// === B) Анкета: страховка регистрации и явный запуск ===
+// === B) Анкета: модульная система ===
 
-// 1) если у тебя есть функция registerOnboarding(bot) из нашего большого блока — вызовем её ОДИН РАЗ
-if (typeof registerOnboarding === 'function' && !global.__ONB_REG) {
-  registerOnboarding(bot);
-  global.__ONB_REG = true;
-  console.log('Onboarding: registerOnboarding(bot) connected');
-}
-
-// 2) ЯВНЫЙ хэндлер команды /onboarding и кнопки "🧭 Анкета"
+// 4) ЯВНЫЙ запуск анкеты (команда и нижняя кнопка)
 bot.onText(/^\/onboarding$|^🧭 Анкета$/, async (msg) => {
   const chatId = msg.chat.id;
   console.log('ONB start by user', chatId);
-
-  // Если у тебя уже есть getUser — используем его.
-  const u = (typeof getUser === 'function')
-    ? getUser(chatId)
-    : (global.__users || (global.__users = new Map())).get(chatId) || (global.__users.set(chatId, { chatId }), (global.__users.get(chatId)));
-
-  // Если в проекте уже есть наш «большой» онбординг (ф-ции _sendQuestion и т.п.) — запускаем его штатно:
-  if (typeof _sendQuestion === 'function') {
-    u.onb = { idx: 0, answers: {}, currentBlock: 'IDENTITY', introShown: {} };
-    await bot.sendMessage(chatId, 'Начинаем персонализацию: отвечай коротко и по делу.');
-    await _sendQuestion(bot, chatId); // <-- эта функция из нашего онбординга покажет первый вопрос
-    return;
+  try {
+    await startOnboarding(bot, chatId); // <-- единая точка входа
+  } catch (e) {
+    console.error('ONB start error', e);
+    await bot.sendMessage(chatId, 'Анкета пока не подключена. Проверь, что файл src/onboarding-max.js существует и экспортирует registerOnboarding/startOnboarding.');
   }
-
-  // Иначе — говорим, что блок не подключён (подсказка что делать)
-  await bot.sendMessage(chatId,
-    'Анкета пока не подключена. Вставь большой блок registerOnboarding(bot) и вызови её после инициализации, или пришли код — помогу.'
-  );
 });
 
 // ==== SETTINGS ====
@@ -141,6 +126,13 @@ function getUser(chatId) {
     if (!u.chatId) u.chatId = chatId;
   }
   return state.get(chatId);
+}
+
+function setUser(chatId, patch) {
+  const user = getUser(chatId);
+  const updated = { ...user, ...patch };
+  state.set(chatId, updated);
+  return updated;
 }
 
 // Дата-сутки по TZ: 'YYYY-MM-DD'
@@ -998,21 +990,28 @@ bot.on('message', async (msg) => {
     }
   }
   
-  // Обработка ответов анкеты
-  const st = onbState[msg.chat.id];
-  if (st) {
-    const step = ONB_QUESTIONS[st.i];
-    if (!step) return;
-
-    const { ok, err, val } = validate(step, msg.text);
-    if (!ok) return bot.sendMessage(msg.chat.id, err);
-
-    st.answers[step.key] = val;
-    st.i += 1;
-
-    if (st.i < ONB_QUESTIONS.length) {
-      await askNext(msg.chat.id);
+  // Обработка ответов анкеты (модульная система)
+  const state = onboarding.onbState.get(msg.chat.id);
+  if (state) {
+    const next = onboarding.getNextQuestion(msg.chat.id);
+    if (!next) return;
+    
+    const { question } = next;
+    const { ok, err, val } = onboarding.validateAnswer(question, msg.text);
+    
+    if (!ok) {
+      await bot.sendMessage(msg.chat.id, err);
+      return;
     }
+    
+    // Сохраняем ответ
+    if (val !== null) {
+      state.answers[question.key] = val;
+    }
+    
+    // Переходим к следующему вопросу
+    state.idx += 1;
+    await onboarding._sendQuestion(bot, msg.chat.id);
     return;
   }
   
@@ -1159,6 +1158,15 @@ app.listen(PORT, '0.0.0.0', async () => {
   } catch (error) {
     console.error('Webhook setup error:', error);
     console.error('Error details:', error?.response?.body || error.message);
+  }
+  
+  // 2) Регистрируем обработчики анкеты ОДИН РАЗ
+  if (typeof registerOnboarding === 'function' && !global.__ONB_REG) {
+    registerOnboarding(bot);
+    global.__ONB_REG = true;
+    console.log('Onboarding: handlers registered');
+  } else {
+    console.log('Onboarding: registerOnboarding not found or already registered');
   }
 });
 
