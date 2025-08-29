@@ -490,7 +490,7 @@ const ONB_QUESTIONS = [
 
 const onbState = {}; // per chat: {i, answers}
 
-const askNext = (chatId) => {
+const askNext = async (chatId) => {
   const st = onbState[chatId];
 
   // Пропускаем вопросы с невыполненными условиями showIf
@@ -943,7 +943,7 @@ bot.on('message', async (msg) => {
     st.i += 1;
 
     if (st.i < ONB_QUESTIONS.length) {
-      askNext(msg.chat.id);
+      await askNext(msg.chat.id);
     }
     return;
   }
@@ -982,9 +982,9 @@ bot.onText(/^\/start$/, async (msg) => {
 });
 
 // Старт анкеты
-bot.onText(/^🧭 Анкета$/, (msg) => {
+bot.onText(/^🧭 Анкета$/, async (msg) => {
   onbState[msg.chat.id] = { i:0, answers:{} };
-  askNext(msg.chat.id);
+  await askNext(msg.chat.id);
 });
 
 bot.onText(/^📝 Отчёт$/, (msg)=>{
