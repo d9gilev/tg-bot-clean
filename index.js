@@ -248,6 +248,205 @@ async function coachFeedbackOneSentence({ name, goal, plan, report }) {
   }
 }
 
+// === PLAN GENERATION ===
+// Подстраховка парсинга JSON
+function parseJsonLoose(s) {
+  try { return JSON.parse(s); } catch (e) {}
+  // вырезать по первому/последнему фигурным скобкам
+  const start = s.indexOf('{'); const end = s.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try { return JSON.parse(s.slice(start, end+1)); } catch(e) {}
+  }
+  return null;
+}
+
+// Схема, по которой просим GPT вернуть план
+const PLAN_SCHEMA = `
+{
+  "meta": { "version": "1.0", "model": "plan" },
+
+  "user": {
+    "name": "Иван",
+    "name_variants": ["Иван", "Иванушка", "Ваня"], 
+    "sex": "М|Ж",
+    "age": 30,
+    "height_cm": 180,
+    "weight_kg": 82,
+    "tz": "Europe/Moscow"
+  },
+
+  "goals": {
+    "primary": "Похудение | Набор мышц | Здоровье-самочувствие | Производительность",
+    "secondary": ["Сила","Выносливость"],
+    "kpi_month": "−2 кг, 10k шагов/день",
+    "target_weight_change_month_kg": -2.0
+  },
+
+  "screening": {
+    "flags": {
+      "medical_flags": "Да|Нет",
+      "meds_affecting_ex": "Да|Нет",
+      "clotting_issue": "Да|Нет",
+      "pregnancy_status": "Не актуально|Актуально",
+      "cardio_symptoms_now": "Да|Нет"
+    },
+    "notes": "краткие ограничения и что учитывать в тренировках"
+  },
+
+  "training": {
+    "days_per_week": 4,
+    "session_length_min": 75,
+    "rpe_guidance": "Рабочие подходы 6–8 RPE; 1–3 повтора в запасе",
+    "equipment": ["Зал","Гантели","Штанга"],
+    "avoid": ["Бег","Скручивания"],
+    "schedule_week": [
+      {
+        "day": "Понедельник",
+        "focus": ["Грудь","Трицепс","Плечи"],
+        "exercises": [
+          {"name":"Жим лёжа", "sets":4, "reps":"6–8", "rpe":"7–8", "rest_sec":120, "alt":["Жим гантелей","Отжимания на брусьях"]},
+          {"name":"Жим гантелей сидя", "sets":3, "reps":"8–10", "rpe":"7", "rest_sec":90},
+          {"name":"Разводка гантелей", "sets":3, "reps":"12–15", "rpe":"6–7", "rest_sec":60},
+          {"name":"Трицепс на блоке", "sets":3, "reps":"10–12", "rpe":"7", "rest_sec":60}
+        ],
+        "cardio_z2_min": 20
+      },
+      { "day":"Среда", "focus":["Спина","Бицепс"], "exercises":[...], "cardio_z2_min":20 },
+      { "day":"Пятница", "focus":["Ноги","Ягодицы","Кор"], "exercises":[...], "cardio_z2_min":20 },
+      { "day":"Суббота", "focus":["День техники/кор"], "exercises":[...], "cardio_z2_min":0 }
+    ],
+    "notes": "Разминка 5–8 минут, заминка 5 минут"
+  },
+
+  "cardio": {
+    "z2_definition": "Разговорный темп (RPE 3–4, ~65–75% HRmax; talk-test ниже VT1)",
+    "weekly_total_min": 90
+  },
+
+  "nutrition": {
+    "kcal_method": "Mifflin-St Jeor",
+    "target_kcal": 2200,
+    "protein_g_per_kg": 1.6,
+    "protein_g": 130,
+    "fat_min_g_per_kg": 0.8,
+    "carb_g": 220,
+    "meals_per_day": 4,
+    "track_style": "Только калории|Только белок|Да|Нет",
+    "diet_limits": ["Нет"],
+    "water_ai_l": 2.5,
+    "water_rationale": "EFSA: 2.5 л мужчины / 2.0 л женщины, корректировать под массу/жару/кардио"
+  },
+
+  "recovery": {
+    "sleep_target_h": ">=7",
+    "steps_goal": "8000–10000"
+  },
+
+  "reminders": {
+    "morning": "08:30",
+    "water": ["11:00","13:00","14:00","15:00","17:00"],
+    "goodnight": "23:00"
+  },
+
+  "reporting": {
+    "style": "Сразу после тренировки | Один раз вечером",
+    "allow_rebuilds": true,
+    "allow_micro_swaps": true
+  },
+
+  "limits": {
+    "food_logs_per_day_limit": 4
+  },
+
+  "safety_notes": "что исключить/на что следить",
+  "rich_text": {
+    "intro_html": "<b>Привет, Ваня!</b> Ниже твой план на 4 недели...",
+    "week_overview_html": "<b>Понедельник — грудь/трицепс/плечи</b> ... (список с упражнениями, подходами, отдыхом, Z2)"
+  }
+}
+`;
+
+// Системная инструкция для модели плана
+function planSystemPromptRus() {
+  return `
+Ты — профессиональный тренер и нутрициолог. Генерируешь персональный МЕСЯЧНЫЙ план на основе анкеты.
+Требования:
+- Используй НОРМЫ: ВОЗ 2020 (150–300 мин/нед умеренная + силовые ≥2/нед), сон ≥7 ч (AASM/SRS), белок ~1.6 г/кг/сут (Morton 2018), креатин 3–5 г/д (ISSN), вода — EFSA (2.5 л муж., 2.0 л жен.), калории — Mifflin–St Jeor.
+- ВСЕГДА учитывай предскрининг (PAR-Q+/ACSM): при красных флагах — снизить интенсивность/указать ограничения.
+- Обращайся к пользователю по ИМЕНИ, варьируй обращения и уместно склоняй (например: "Павел", "Паш, смотри...", "Павла" — когда нужно по контексту). Не перегибай.
+- План должен быть ЧЕЛОВЕЧЕСКИ оформлен: по дням недели с фокусом по мышечным группам, затем упражнения (название, подходы×повторы, RPE, отдых), плюс кардио Z2, если актуально.
+- Вывод ТОЛЬКО в виде одного JSON строго по схеме ниже (поле rich_text содержит красиво оформленный HTML-текст для Telegram).
+- Учитывай предпочтения/неприятные упражнения/инвентарь/время/приёмы пищи/воду/шаги/добавки/режим "пинков".
+- Если цель похудение/набор и задана величина (кг/мес) — скорректируй калории соответственно.
+СХЕМА:
+${PLAN_SCHEMA}
+Сгенерируй JSON по этой схеме без комментариев и лишнего текста.`;
+}
+
+// Генерация плана
+async function generatePlanFromAnswersGPT(user) {
+  const a = user.onb?.answers || user.onbAnswers || {};
+  const payload = {
+    user_input: {
+      name: user.name || a.name || 'Друг',
+      sex: a.sex || user.sex || 'М',
+      age: a.age, height_cm: a.height_cm, weight_kg: a.weight_kg, tz: user.tz || a.tz,
+      waist_cm: a.waist_cm
+    },
+    screening: {
+      medical_flags: a.medical_flags, meds_affecting_ex: a.meds_affecting_ex,
+      clotting_issue: a.clotting_issue, pregnancy_status: a.pregnancy_status,
+      cardio_symptoms_now: a.cardio_symptoms, injury_notes: a.injury_notes
+    },
+    goals: {
+      primary: a.goal, secondary: a.secondary_goals, kpi: a.goal_kpi,
+      weight_loss_month_kg: a.weight_loss_month_kg,
+      weight_gain_month_kg: a.weight_gain_month_kg
+    },
+    profile: {
+      level: a.level, training_history: a.training_history, rpe_ready: a.rpe_ready
+    },
+    logistics: {
+      days_per_week: a.days_per_week, preferred_slots: a.preferred_slots,
+      session_length: a.session_length, equipment: a.equipment,
+      equipment_limits: a.equipment_limits
+    },
+    preferences: { dislikes: a.dislikes, cardio_pref: a.cardio_pref },
+    nutrition: {
+      diet_limits: a.diet_limits, track_style: a.track_style, meals_per_day: a.meals_per_day,
+      water_ready: a.water_ready
+    },
+    recovery_neat: {
+      sleep_hours: a.sleep_hours, stress_level: a.stress_level, steps_level: a.steps_level
+    },
+    cardio_steps: {
+      z2_after_lifts: a.z2_after_lifts, swim_ok: a.swim_ok, steps_goal_ok: a.steps_goal_ok
+    },
+    supps_reporting: {
+      creatine_ok: a.creatine_ok, omega_vitd: a.omega_vitd, report_style: a.report_style,
+      plan_rebuilds_ok: a.plan_rebuilds_ok, micro_swaps_ok: a.micro_swaps_ok,
+      month_constraints: a.month_constraints, reminder_mode: a.reminder_mode
+    }
+  };
+
+  const sys = planSystemPromptRus();
+  const userMsg = `Анкета пользователя в JSON:\n${JSON.stringify(payload, null, 2)}\n\nВерни план ТОЛЬКО как один JSON по схеме.`;
+
+  const resp = await oa.responses.create({
+    model: process.env.OPENAI_MODEL_PLAN || 'gpt-4o',
+    input: [
+      { role: 'system', content: sys },
+      { role: 'user', content: userMsg }
+    ],
+    temperature: 0.3
+  });
+
+  const out = resp.output_text || resp.content?.[0]?.text || resp.choices?.[0]?.message?.content || '';
+  const plan = parseJsonLoose(out);
+  if (!plan) throw new Error('Plan JSON parse failed');
+  return plan;
+}
+
 // === REMINDERS HELPERS ===
 // равномерное распределение тренировок по неделе (очень грубо, MVP)
 function trainingDaysFor(u){
@@ -328,18 +527,14 @@ const askNext = (chatId) => {
   }
 
   // Если дошли до конца, завершаем анкету
-  const built = createPlanFromAnswers(st.answers);
   const u = ensureUser(chatId);
-  setUser(u.chatId, { ...built, name: st.answers.name || u.name || 'Пользователь' });
+  u.onbAnswers = st.answers; // Сохраняем ответы для генерации плана
   delete onbState[chatId];
-  bot.sendMessage(u.chatId, `План готов ✅\n\n` +
-    `Цель: ${built.plan.goal}\n` +
-    `Тренировок/нед: ${built.plan.days_per_week} (${built.plan.session_length})\n` +
-    `Ккал/день: ~${built.plan.daily_kcal}\n` +
-    `Белок: ${built.plan.protein_g_per_kg} г/кг\n` +
-    `Вода: ~${built.plan.water_goal_ml} мл\n` +
-    `Сон: ⩾${built.plan.sleep_goal_h} ч\n` +
-    `Схема силовых: ${built.plan.workouts.join(" · ")}`, mainKb);
+  
+  await bot.sendMessage(chatId,
+    'Супер! Нажми «Сформировать план», и я соберу программу на 4 недели.',
+    { reply_markup: { inline_keyboard: [[{ text: 'Сформировать план ▶️', callback_data: 'plan:build' }]] } }
+  );
 };
 
 const validate = (step, text) => {
@@ -820,6 +1015,32 @@ bot.on('callback_query', async (q) => {
     console.log('CQ:', q.id, q.data); // ДОЛЖНО появляться в логах при клике
     const data = q.data || '';
 
+    // Генерация плана
+    if (data === 'plan:build') {
+      const chatId = q.message.chat.id;
+      await bot.answerCallbackQuery(q.id, { text: 'Делаю план…' });
+      const u = getUser(chatId);
+      try {
+        const plan = await generatePlanFromAnswersGPT(u);
+        u.plan = plan;
+
+        // Покажем «красивый» блок (rich_text.intro_html + week_overview_html)
+        const intro = plan?.rich_text?.intro_html || '<b>План готов!</b>';
+        await bot.sendMessage(chatId, intro, { parse_mode: 'HTML' });
+
+        const week = plan?.rich_text?.week_overview_html;
+        if (week) await bot.sendMessage(chatId, week, { parse_mode: 'HTML' });
+
+        // Обновим «дом» и экран "📅 План"
+        await ensureHubMessage(bot, u, 'plan');
+        await sendOrUpdateHome(bot, chatId);
+      } catch (e) {
+        console.error('plan build error', e);
+        await bot.sendMessage(chatId, 'Не получилось собрать план, попробуй ещё раз через минуту.');
+      }
+      return;
+    }
+
     if (/^nav:(home|plan|food|reports|settings)$/.test(data)) {
       const screen = data.split(':')[1];
       const chatId = q.message?.chat?.id || q.from.id; // если inline
@@ -887,15 +1108,15 @@ app.listen(PORT, '0.0.0.0', async () => {
   try {
     // на всякий случай сносим старую привязку
     console.log('Deleting old webhook...');
-    await fetch(`https://api.telegram.org/bot${TOKEN}/deleteWebhook`, { method: 'POST' });
+  await fetch(`https://api.telegram.org/bot${TOKEN}/deleteWebhook`, { method: 'POST' });
     
     // ставим новую привязку с секретом и нужными типами апдейтов
     console.log('Setting new webhook...');
     const result = await bot.setWebHook(hookUrl, {
       secret_token: SECRET,  // Telegram пришлёт этот заголовок
-      allowed_updates: ['message', 'callback_query'],
-      drop_pending_updates: true
-    });
+    allowed_updates: ['message', 'callback_query'],
+    drop_pending_updates: true
+  });
     console.log('Webhook set result:', result);
   } catch (error) {
     console.error('Webhook setup error:', error);
