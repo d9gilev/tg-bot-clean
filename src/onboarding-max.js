@@ -257,25 +257,14 @@ function defaultWorkouts(days) {
   return map[days] || map[3];
 }
 
-// Функции для совместимости с основным файлом
-// Эти функции должны быть определены в основном файле
-// Здесь только заглушки для совместимости
-function getUser(chatId) {
-  // Эта функция должна быть определена в основном файле
-  if (global.getUser) {
-    return global.getUser(chatId);
-  }
-  // Заглушка для тестирования
-  return { chatId, name: null, tz: 'Europe/Amsterdam' };
-}
+// Функции будут переданы из основного файла
+let getUser = null;
+let setUser = null;
 
-function setUser(chatId, patch) {
-  // Эта функция должна быть определена в основном файле
-  if (global.setUser) {
-    return global.setUser(chatId, patch);
-  }
-  // Заглушка для тестирования
-  return { chatId, ...patch };
+// Функция для инициализации с переданными функциями
+function initOnboarding(getUserFn, setUserFn) {
+  getUser = getUserFn;
+  setUser = setUserFn;
 }
 
 // Главная клавиатура (соответствует основному файлу)
@@ -309,6 +298,7 @@ function startOnboarding(bot, chatId) {
 }
 
 module.exports = { 
+  initOnboarding,
   registerOnboarding, 
   startOnboarding, 
   onbState,

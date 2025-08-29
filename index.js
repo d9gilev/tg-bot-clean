@@ -2,13 +2,21 @@
 require('dotenv').config();
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
-const OpenAI = require("openai");
-const oa = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Условный импорт OpenAI (только если есть API ключ)
+let oa = null;
+try {
+  const OpenAI = require("openai");
+  if (process.env.OPENAI_API_KEY) {
+    oa = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  }
+} catch (e) {
+  console.log('OpenAI not available:', e.message);
+}
 const cron = require('node-cron');
 
 // 1) Импортируем модуль анкеты
 const onboarding = require('./src/onboarding-max');
-const { registerOnboarding, startOnboarding } = onboarding;
+const { initOnboarding, registerOnboarding, startOnboarding } = onboarding;
 
 const TOKEN  = process.env.BOT_TOKEN;
 const BASE   = process.env.WEBHOOK_URL;     // https://…up.railway.app
@@ -135,9 +143,8 @@ function setUser(chatId, patch) {
   return updated;
 }
 
-// Делаем функции доступными глобально для модуля анкеты
-global.getUser = getUser;
-global.setUser = setUser;
+// Инициализируем модуль анкеты с функциями
+initOnboarding(getUser, setUser);
 
 // Дата-сутки по TZ: 'YYYY-MM-DD'
 function dayKeyNow() {
