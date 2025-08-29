@@ -260,6 +260,23 @@ function defaultWorkouts(days) {
 // Функции для совместимости с основным файлом
 // Эти функции должны быть определены в основном файле
 // Здесь только заглушки для совместимости
+function getUser(chatId) {
+  // Эта функция должна быть определена в основном файле
+  if (global.getUser) {
+    return global.getUser(chatId);
+  }
+  // Заглушка для тестирования
+  return { chatId, name: null, tz: 'Europe/Amsterdam' };
+}
+
+function setUser(chatId, patch) {
+  // Эта функция должна быть определена в основном файле
+  if (global.setUser) {
+    return global.setUser(chatId, patch);
+  }
+  // Заглушка для тестирования
+  return { chatId, ...patch };
+}
 
 // Главная клавиатура (соответствует основному файлу)
 const mainKb = {

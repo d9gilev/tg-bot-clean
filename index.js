@@ -135,6 +135,10 @@ function setUser(chatId, patch) {
   return updated;
 }
 
+// Делаем функции доступными глобально для модуля анкеты
+global.getUser = getUser;
+global.setUser = setUser;
+
 // Дата-сутки по TZ: 'YYYY-MM-DD'
 function dayKeyNow() {
   const now = new Date();
