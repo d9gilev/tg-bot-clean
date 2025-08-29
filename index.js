@@ -281,6 +281,8 @@ const ONB_QUESTIONS = [
   { key:"weight_kg",    type:"number", q:"Вес (кг):",      min:35,  max:250 },
   { key:"steps_level",  type:"single", q:"Средняя активность (шагов/день):", opts:["<5k","5–8k","8–11k",">11k"] },
   { key:"goal",         type:"single", q:"Главная цель:", opts:["Похудение","Набор мышечной массы","Поддержание здоровья и самочувствия","Увеличение производительности"] },
+  { key:"weight_loss_month_kg", type:"number", q:"На сколько КГ за месяц хочешь похудеть?", min:0.1, max:6, showIf: { field:'goal', equals:'Похудение' } },
+  { key:"weight_gain_month_kg", type:"number", q:"На сколько КГ за месяц хочешь набрать?", min:0.1, max:6, showIf: { field:'goal', equals:'Набор мышечной массы' } },
   { key:"days_per_week",type:"number", q:"Сколько тренировок в неделю?", min:1, max:6 },
   { key:"session_length",type:"single", q:"Длительность одной тренировки:", opts:["60 мин","75 мин","90 мин"] },
   { key:"equipment",    type:"text",   q:"Где/что доступно? Введи через запятую из списка:\nДом, Зал, Улица, Штанга, Гантели, Тренажёры, Турник, Эспандеры, Дорожка/вело, Бассейн" },
@@ -291,21 +293,53 @@ const onbState = {}; // per chat: {i, answers}
 
 const askNext = (chatId) => {
   const st = onbState[chatId];
-  const step = ONB_QUESTIONS[st.i];
-  if (!step) return;
-  if (step.type === "single") {
-    bot.sendMessage(chatId, step.q, { 
-      reply_markup: { 
-        keyboard: [step.opts.map(o=>({text:o}))], 
-        resize_keyboard:true, 
-        one_time_keyboard:true 
-      } 
-    });
-  } else {
-    bot.sendMessage(chatId, step.q, { 
-      reply_markup: { remove_keyboard: true } 
-    });
+
+  // Пропускаем вопросы с невыполненными условиями showIf
+  while (st.i < ONB_QUESTIONS.length) {
+    const step = ONB_QUESTIONS[st.i];
+    if (!step) break;
+
+    // Проверяем условие showIf
+    if (step.showIf) {
+      const { field, equals } = step.showIf;
+      const answer = st.answers[field];
+      if (answer !== equals) {
+        // Условие не выполнено, пропускаем этот вопрос
+        st.i++;
+        continue;
+      }
+    }
+
+    // Показываем вопрос
+    if (step.type === "single") {
+      bot.sendMessage(chatId, step.q, {
+        reply_markup: {
+          keyboard: [step.opts.map(o=>({text:o}))],
+          resize_keyboard:true,
+          one_time_keyboard:true
+        }
+      });
+    } else {
+      bot.sendMessage(chatId, step.q, {
+        reply_markup: { remove_keyboard: true }
+      });
+    }
+    return; // Вышли из цикла, вопрос показан
   }
+
+  // Если дошли до конца, завершаем анкету
+  const built = createPlanFromAnswers(st.answers);
+  const u = ensureUser(chatId);
+  setUser(u.chatId, { ...built, name: st.answers.name || u.name || 'Пользователь' });
+  delete onbState[chatId];
+  bot.sendMessage(u.chatId, `План готов ✅\n\n` +
+    `Цель: ${built.plan.goal}\n` +
+    `Тренировок/нед: ${built.plan.days_per_week} (${built.plan.session_length})\n` +
+    `Ккал/день: ~${built.plan.daily_kcal}\n` +
+    `Белок: ${built.plan.protein_g_per_kg} г/кг\n` +
+    `Вода: ~${built.plan.water_goal_ml} мл\n` +
+    `Сон: ⩾${built.plan.sleep_goal_h} ч\n` +
+    `Схема силовых: ${built.plan.workouts.join(" · ")}`, mainKb);
 };
 
 const validate = (step, text) => {
@@ -336,10 +370,26 @@ const palFromSteps = (steps_level) => {
   return {"<5k":1.3,"5–8k":1.45,"8–11k":1.6,">11k":1.75}[steps_level] || 1.4; 
 };
 
-const kcalByGoal = (tdee, goal) => { 
-  if(goal==="Похудение") return Math.round(tdee*0.85); 
-  if(goal==="Набор мышечной массы") return Math.round(tdee*1.10); 
-  return Math.round(tdee); 
+const kcalByGoal = (tdee, goal, weightChangeKg = null) => {
+  if(goal==="Похудение") {
+    // Если указана желаемая скорость похудения, рассчитаем более точно
+    if (weightChangeKg && weightChangeKg > 0) {
+      // 1 кг жира ≈ 7700 ккал, делим на 30 дней
+      const deficit = (weightChangeKg * 7700) / 30;
+      return Math.round(tdee - deficit);
+    }
+    return Math.round(tdee*0.85); // дефолт -15%
+  }
+  if(goal==="Набор мышечной массы") {
+    // Если указана желаемая скорость набора, рассчитаем более точно
+    if (weightChangeKg && weightChangeKg > 0) {
+      // 1 кг мышц ≈ 2500 ккал профицита, делим на 30 дней
+      const surplus = (weightChangeKg * 2500) / 30;
+      return Math.round(tdee + surplus);
+    }
+    return Math.round(tdee*1.10); // дефолт +10%
+  }
+  return Math.round(tdee); // поддержание
 };
 
 const defaultWorkouts = (days) => { 
@@ -350,10 +400,21 @@ const defaultWorkouts = (days) => {
 const createPlanFromAnswers = (a) => {
   const rmr  = mifflinStJeor({ sex:a.sex, weight:+a.weight_kg||70, height:+a.height_cm||170, age:+a.age||30 });
   const tdee = Math.round(rmr * palFromSteps(a.steps_level));
-  const daily_kcal = kcalByGoal(tdee, a.goal);
+
+  // Определяем желаемую скорость изменения веса
+  let weightChangeKg = null;
+  if (a.goal === "Похудение" && a.weight_loss_month_kg) {
+    weightChangeKg = a.weight_loss_month_kg;
+  } else if (a.goal === "Набор мышечной массы" && a.weight_gain_month_kg) {
+    weightChangeKg = a.weight_gain_month_kg;
+  }
+
+  const daily_kcal = kcalByGoal(tdee, a.goal, weightChangeKg);
 
   const plan = {
     goal: a.goal,
+    weight_loss_month_kg: a.weight_loss_month_kg || null,
+    weight_gain_month_kg: a.weight_gain_month_kg || null,
     days_per_week: +a.days_per_week || 3,
     session_length: a.session_length || "60 мин",
     equipment: Array.isArray(a.equipment) ? a.equipment : String(a.equipment||"").split(",").map(s=>s.trim()).filter(Boolean),
@@ -688,24 +749,6 @@ bot.on('message', async (msg) => {
 
     if (st.i < ONB_QUESTIONS.length) {
       askNext(msg.chat.id);
-    } else {
-      // анкета готова → создаём план
-      const built = createPlanFromAnswers(st.answers);
-      const u = ensureUser(msg.chat.id);
-      Object.assign(u, { ...built, name: st.answers.name || u.name || msg.from.first_name });
-
-      delete onbState[msg.chat.id];
-      bot.sendMessage(assertChatId(u.chatId),
-        `План готов ✅\n\n` +
-        `Цель: ${built.plan.goal}\n` +
-        `Тренировок/нед: ${built.plan.days_per_week} (${built.plan.session_length})\n` +
-        `Ккал/день: ~${built.plan.daily_kcal}\n` +
-        `Белок: ${built.plan.protein_g_per_kg} г/кг\n` +
-        `Вода: ~${built.plan.water_goal_ml} мл\n` +
-        `Сон: ⩾${built.plan.sleep_goal_h} ч\n` +
-        `Схема силовых: ${built.plan.workouts.join(" · ")}`,
-        { reply_markup: mainKb }
-      );
     }
     return;
   }
