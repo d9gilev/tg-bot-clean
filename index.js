@@ -180,6 +180,21 @@ function ensureUser(chatId) { return getUser(chatId); }
 // === Компактная совместимость с прежней логикой "ожидаем еду"
 const expectingFood = new Set();
 
+// Фильтр вежливости + лёгкая ирония на хамство
+const BAD_RU = [
+  /говн/i, /хер|хуй|поху/i, /пизд/i, /сука/i, /мраз/i, /долбо/i, /ублюд/i
+];
+
+function looksToxic(text='') {
+  return BAD_RU.some(re => re.test(text));
+}
+
+const WITTY = [
+  'Не думал, что у тебя ТАКИЕ изысканные вкусы 😅 Давай вернёмся к здоровой еде?',
+  'Запишу как «эксперимент». Но нутрициолог внутри меня плачет. Возьмём яблоко? 🍎',
+  'Хм… смелый выбор. Я бы заменил это на что-то, что не обидит твой ЖКТ 🙃',
+];
+
 // === UI (экраны/хаб) ===
 const getUI = (u) => { u.ui ??= {}; return u.ui; };
 
@@ -825,6 +840,61 @@ bot.on('message', async (msg) => {
     const t = msg.text || '';
     
     console.log('Handler saw message:', msg.message_id, t);
+
+    const chatId = msg.chat?.id; 
+    if (!chatId) return;
+
+    // Фильтр вежливости - проверяем на токсичность
+    if (!t.startsWith('/') && looksToxic(t)) {
+      const reply = WITTY[Math.floor(Math.random() * WITTY.length)];
+      await bot.sendMessage(chatId, reply);
+      return; // НЕ учитываем как еду/отчёт
+    }
+
+    // Приём еды в новом формате "Еда: ..."
+    if (expectingFood.has(chatId)) {
+      // отмена
+      if (/^\/?cancel$|^отмена$/i.test(t)) {
+        expectingFood.delete(chatId);
+        return bot.sendMessage(chatId, 'Ок, отменил.');
+      }
+
+      const m = /^еда\s*[:\-]\s*(.+)$/i.exec(t);
+      if (!m) return; // пользователь написал что-то иное
+
+      const desc = m[1].trim();
+      const u = getUser(chatId);
+      const today = new Date().toISOString().slice(0,10);
+      
+      if (!u.food) u.food = {};
+      if (!u.food[today]) u.food[today] = [];
+
+      // лимит 4/день
+      if (u.food[today].length >= 4) {
+        expectingFood.delete(chatId);
+        return bot.sendMessage(chatId, 'Лимит на сегодня исчерпан — съешь яблочко! 🍎');
+      }
+
+      // сохраняем запись
+      u.food[today].push({ at: Date.now(), text: desc });
+      const left = 4 - u.food[today].length;
+
+      expectingFood.delete(chatId);
+
+      // Компактная квитанция + быстрые кнопки
+      await bot.sendMessage(chatId,
+        `🍽️ Записал: ${desc}\nОсталось приёмов: ${left}/4`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              left > 0 ? [{ text:'Добавить ещё', callback_data:'food:more' }] : [],
+              [{ text:'Итоги дня', callback_data:'food:summary' }, { text:'↩️ Домой', callback_data:'nav:home' }]
+            ].filter(r => r.length)
+          }
+        }
+      );
+      return;
+    }
   
   const u = getUser(msg.chat.id);
 
@@ -903,31 +973,14 @@ bot.on('message', async (msg) => {
     return;
   }
 
-  // Кнопка "🍽️ Еда" → проверяем лимит
+  // Кнопка "🍽️ Еда" → новый компактный формат
   if (t === "🍽️ Еда") {
-    const u = getUser(msg.chat.id);
-    const today = getMealsToday(u);
-    const limit = limitMealsFor(u);
-    const left  = Math.max(0, limit - today.list.length);
-
-    if (left <= 0) {
-      await bot.sendMessage(u.chatId || msg.chat.id, '🍏 Еда на сегодня закончилась — съешь яблочко!', mainKb);
-      await sendOrUpdateHome(bot, msg.chat.id);
-      return;
-    }
-
-    u.awaitingMeal = true;
-    await bot.sendMessage(
-      msg.chat.id,
-      `Пришли еду текстом (например: «омлет с сыром») или фото с подписью.\nОсталось перекусов: ${left}\nПосле завершения нажми «✅ Готово».`,
-      {
-        reply_markup: {
-          keyboard: [[{ text: '✅ Готово' }], [{ text: '↩️ Отмена' }]],
-          resize_keyboard: true,
-          one_time_keyboard: true
-        }
-      }
-    );
+    const chatId = msg.chat.id;
+    expectingFood.add(chatId);
+    await bot.sendMessage(chatId, 'Пришли еду так: <code>Еда: омлет с сыром</code> (до 4/день)', {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [[{ text:'Отмена', callback_data:'food:cancel' }]] }
+    });
     return;
   }
 
@@ -1062,6 +1115,47 @@ bot.on('callback_query', async (q) => {
   try {
     console.log('CQ:', q.id, q.data); // ДОЛЖНО появляться в логах при клике
     const data = q.data || '';
+    const chatId = q.message?.chat?.id;
+    if (!chatId) return;
+
+    // Кнопки еды
+    if (data === 'food:cancel') {
+      expectingFood.delete(chatId);
+      await bot.answerCallbackQuery(q.id, { text: 'Отменено' });
+      return;
+    }
+    if (data === 'food:more') {
+      expectingFood.add(chatId);
+      await bot.answerCallbackQuery(q.id, { text: 'Жду ещё один приём' });
+      await bot.sendMessage(chatId, 'Еда: <что съел?>');
+      return;
+    }
+    if (data === 'food:summary') {
+      await bot.answerCallbackQuery(q.id);
+      const u = getUser(chatId);
+      const today = new Date().toISOString().slice(0,10);
+      const meals = u.food?.[today] || [];
+      
+      if (meals.length === 0) {
+        await bot.sendMessage(chatId, 'Сегодня приёмов еды нет. Начни с «🍽️ Еда».');
+        return;
+      }
+      
+      const lines = meals.map((m, i) => {
+        const time = new Date(m.at).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' });
+        return `${i + 1}) ${time} — ${m.text}`;
+      });
+      
+      const summary = [
+        '📊 Итоги дня по еде:',
+        ...lines,
+        '',
+        'Рекомендация: держи белок 20–40 г в каждом приёме, добавляй овощи.'
+      ].join('\n');
+      
+      await bot.sendMessage(chatId, summary);
+      return;
+    }
 
     // Генерация плана
     if (data === 'plan:build') {
