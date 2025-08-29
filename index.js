@@ -38,6 +38,74 @@ const safeSend = (chatId, text, opts) =>
     console.error('sendMessage error:', err?.response?.body || err);
   });
 
+// === A) Команды и главное меню ===
+
+// 1) зарегистрируем команды (чтобы в Telegram были в меню «/»)
+bot.setMyCommands([
+  { command: 'start', description: 'Главное меню' },
+  { command: 'onboarding', description: 'Пройти анкету' },
+  { command: 'menu', description: 'Показать меню' }
+]).catch(console.error);
+
+// 2) функция показывающая НИЖНЮЮ reply-клавиатуру
+async function showMainMenu(chatId, text = 'Главное меню') {
+  const keyboard = {
+    keyboard: [
+      [{ text: '• 🏠 Главная' }, { text: '📅 План' }],
+      [{ text: '🍽️ Еда' }, { text: '📝 Отчёты' }],
+      [{ text: '🧭 Анкета' }, { text: '⚙️ Настройки' }]
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: false
+  };
+  return bot.sendMessage(chatId, text, { reply_markup: keyboard });
+}
+
+// 3) /start — всегда возвращает нижние кнопки
+bot.onText(/^\/start$/, async (msg) => {
+  const chatId = msg.chat.id;
+  await showMainMenu(chatId, 'Привет! Я вернул клавиатуру. Выбирай раздел 👇');
+});
+
+// 4) /menu — быстрый способ вернуть клавиатуру, если её сняли
+bot.onText(/^\/menu$/, async (msg) => {
+  const chatId = msg.chat.id;
+  await showMainMenu(chatId);
+});
+
+// === B) Анкета: страховка регистрации и явный запуск ===
+
+// 1) если у тебя есть функция registerOnboarding(bot) из нашего большого блока — вызовем её ОДИН РАЗ
+if (typeof registerOnboarding === 'function' && !global.__ONB_REG) {
+  registerOnboarding(bot);
+  global.__ONB_REG = true;
+  console.log('Onboarding: registerOnboarding(bot) connected');
+}
+
+// 2) ЯВНЫЙ хэндлер команды /onboarding и кнопки "🧭 Анкета"
+bot.onText(/^\/onboarding$|^🧭 Анкета$/, async (msg) => {
+  const chatId = msg.chat.id;
+  console.log('ONB start by user', chatId);
+
+  // Если у тебя уже есть getUser — используем его.
+  const u = (typeof getUser === 'function')
+    ? getUser(chatId)
+    : (global.__users || (global.__users = new Map())).get(chatId) || (global.__users.set(chatId, { chatId }), (global.__users.get(chatId)));
+
+  // Если в проекте уже есть наш «большой» онбординг (ф-ции _sendQuestion и т.п.) — запускаем его штатно:
+  if (typeof _sendQuestion === 'function') {
+    u.onb = { idx: 0, answers: {}, currentBlock: 'IDENTITY', introShown: {} };
+    await bot.sendMessage(chatId, 'Начинаем персонализацию: отвечай коротко и по делу.');
+    await _sendQuestion(bot, chatId); // <-- эта функция из нашего онбординга покажет первый вопрос
+    return;
+  }
+
+  // Иначе — говорим, что блок не подключён (подсказка что делать)
+  await bot.sendMessage(chatId,
+    'Анкета пока не подключена. Вставь большой блок registerOnboarding(bot) и вызови её после инициализации, или пришли код — помогу.'
+  );
+});
+
 // ==== SETTINGS ====
 const DAY_LIMIT_MEALS = 4; // базовый лимит на день (перекусов)
 const TZ = process.env.TZ || 'Europe/Amsterdam'; // можно поменять на свой
@@ -953,39 +1021,9 @@ bot.on('message', async (msg) => {
   }
 });
 
-bot.onText(/^\/start$/, async (msg) => {
-  const u = ensureUser(msg.chat.id);
-  if (!u.plan) {
-    const answers = {
-      sex: u.sex || "М", 
-      age: u.age || 30, 
-      weight_kg: u.weight_kg || 75, 
-      height_cm: u.height_cm || 175,
-      steps_level: u.steps_level || "5–8k",
-      goal: u.goal || "Поддержание здоровья и самочувствия",
-      days_per_week: u.days_per_week || 3, 
-      session_length: u.session_length || "60 мин",
-      equipment: u.equipment || [], 
-      dislikes: u.dislikes || []
-    };
-    const built = createPlanFromAnswers(answers);
-    Object.assign(u, { ...built, name: u.name || msg.from.first_name });
-  }
-  const user = ensureUser(msg.chat.id);
-  bot.sendMessage(assertChatId(msg.chat.id), welcomeText(user), { 
-    parse_mode: 'HTML', 
-    reply_markup: mainKb 
-  });
-  await ensureHubMessage(bot, msg.chat.id, 'home');
-  // Можно сразу спросить про креатин:
-  // askCreatine(msg.chat.id);
-});
 
-// Старт анкеты
-bot.onText(/^🧭 Анкета$/, async (msg) => {
-  onbState[msg.chat.id] = { i:0, answers:{} };
-  await askNext(msg.chat.id);
-});
+
+
 
 bot.onText(/^📝 Отчёт$/, (msg)=>{
   expectingReport.add(msg.chat.id);
