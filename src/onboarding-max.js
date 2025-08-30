@@ -478,7 +478,7 @@ function registerOnboarding(bot){
       u.onb = u.onb || { introShown:{} };
       u.onb.introShown[blk] = true;
       u.onb.waitingIntro = null;
-      await answerCb(bot, q.id, chatId, { text:'Ок' });
+      await answerCbNow(bot, q.id, { text:'Ок' });
       await _sendQuestion(bot, chatId);
       return;
     }
@@ -487,22 +487,22 @@ function registerOnboarding(bot){
     if (data.startsWith('onb:pick:')) {
       const [, , key, idxStr] = data.split(':'); // onb:pick:key:idx
       const st = onbState.get(chatId);
-      if (!st) return answerCb(bot, q.id, chatId, { text:'Анкета завершена' });
+      if (!st) return answerCbNow(bot, q.id, { text:'Анкета завершена' });
       // промотать до актуального вопроса
       while (st.idx < ONB.length && !needShow(ONB[st.idx], st.answers)) st.idx++;
       const qdef = ONB[st.idx];
-      if (!qdef || qdef.key !== key) return answerCb(bot, q.id, chatId, { text:'Проскочили вопрос' });
+      if (!qdef || qdef.key !== key) return answerCbNow(bot, q.id, { text:'Проскочили вопрос' });
       const opt = qdef.opts[Number(idxStr)];
       st.answers[key] = opt;
       st.idx++;
-      await answerCb(bot, q.id, chatId, { text:'✔' });
+      await answerCbNow(bot, q.id, { text:'✔' });
       await wait(120);
       return _sendQuestion(bot, chatId);
     }
 
     // построить план
     if (data === 'plan:build') {
-      await answerCb(bot, q.id, chatId, { text:'Собираю план…' });
+      await answerCbNow(bot, q.id, { text:'Собираю план…' });
 
       const ans = getUser(chatId)?.onbAnswers || {};
       let planJson = null;

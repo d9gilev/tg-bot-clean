@@ -71,6 +71,9 @@ try {
 }
 const cron = require('node-cron');
 
+// НОВОЕ — правильные импорт/регистрация анкеты
+const { registerOnboarding, startOnboarding, onbState } = require('./src/onboarding-max');
+
 // ===== Версия/диагностика, чтобы видеть свежий деплой =====
 const BUILD = {
   sha: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.COMMIT_SHA || 'local',
@@ -105,6 +108,12 @@ app.use(express.json({ limit: '2mb' }));
 const bot = new TelegramBot(TOKEN, { webHook: { autoOpen: false } });
 const hookUrl = `${BASE}${PATH}`;
 
+// Ставим сразу после создания bot
+if (!global.__ONB_REG) {
+  registerOnboarding(bot);
+  global.__ONB_REG = true;
+}
+
 // Безопасная отправка — чтобы видеть ошибки API
 const safeSend = (chatId, text, opts) =>
   bot.sendMessage(chatId, text, opts).catch(err => {
@@ -126,9 +135,14 @@ bot.onText(/^\/version$/, (msg) => {
   bot.sendMessage(msg.chat.id, `Версия: ${BUILD.onb}\nCommit: ${short}\nStarted: ${BUILD.startedAt}`);
 });
 
+// Команда для запуска анкеты
+bot.onText(/^\/onboarding$|^🧭\s?Анкета$/i, (msg) => {
+  startOnboarding(bot, msg.chat.id);
+});
+
 // Диагностика: показать состояние онбординга
 bot.onText(/^\/onb_state$/, (msg) => {
-  const u = onbMod.getUser(msg.chat.id);
+  const u = (global.__users && global.__users.get(msg.chat.id)) || {};
   const state = u.onb ? { idx: u.onb.idx, waitingIntro: u.onb.waitingIntro, nextKey: (u.onb.idx !== undefined ? 'see logs' : null) } : 'none';
   console.log('ONB STATE', msg.chat.id, u.onb);
   bot.sendMessage(msg.chat.id, 'onb: ' + (u.onb ? JSON.stringify(u.onb, null, 2) : 'none'));
@@ -171,9 +185,7 @@ bot.on('callback_query', (q) => {
   console.log('CQ:', q.data, 'from', q.from?.id);
 });
 
-// ===== Подключаем модуль анкеты =====
-const { registerOnboarding } = require('./src/onboarding-max');
-if (!global.__ONB_REG) { registerOnboarding(bot); global.__ONB_REG = true; }
+
 
 
 
