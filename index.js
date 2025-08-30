@@ -109,6 +109,11 @@ bot.on('message', (m) => {
   console.log('DBG msg:', m.chat.id, JSON.stringify(m.text || m.caption || '(non-text)'));
 });
 
+// ===== Ловушка для callback_query =====
+bot.on('callback_query', (q) => {
+  console.log('CQ:', q.data, 'from', q.from?.id);
+});
+
 // ===== Подключаем НОВЫЙ модуль анкеты и жёстко регистрируем =====
 let onbMod;
 try {
@@ -893,10 +898,7 @@ bot.on('message', async (msg) => {
 
     // Проверяем, не в процессе анкеты ли пользователь
     const onbUser = onbMod?.getUser?.(chatId);
-    if (onbUser?.onb) {
-      console.log('User in onboarding, skipping main handler');
-      return; // не мешаем анкете
-    }
+    if (onbUser?.onb) return;   // пока идёт анкета — НИЧЕГО лишнего не шлём
 
     // Фильтр вежливости - проверяем на токсичность
     if (!t.startsWith('/') && looksToxic(t)) {

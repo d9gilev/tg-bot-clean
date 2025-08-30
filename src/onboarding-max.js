@@ -440,6 +440,7 @@ function startOnboarding(bot, chatId) {
 }
 
 module.exports = { 
+  getUser,
   registerOnboarding, 
   startOnboarding, 
   onbState,
