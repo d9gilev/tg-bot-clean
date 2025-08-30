@@ -71,8 +71,8 @@ try {
 }
 const cron = require('node-cron');
 
-// НОВОЕ — правильные импорт/регистрация анкеты
-const { registerOnboarding, startOnboarding, onbState } = require('./src/onboarding-max');
+// === Onboarding module (единый источник правды) ===
+const onbMod = require('./src/onboarding-max'); // <- ВАЖНО: именно так
 
 // ===== Версия/диагностика, чтобы видеть свежий деплой =====
 const BUILD = {
@@ -108,10 +108,11 @@ app.use(express.json({ limit: '2mb' }));
 const bot = new TelegramBot(TOKEN, { webHook: { autoOpen: false } });
 const hookUrl = `${BASE}${PATH}`;
 
-// Ставим сразу после создания bot
-if (!global.__ONB_REG) {
-  registerOnboarding(bot);
-  global.__ONB_REG = true;
+// Регистрируем хендлеры анкеты 1 раз
+if (!global.__ONB_REG__) {
+  onbMod.registerOnboarding(bot);
+  global.__ONB_REG__ = true;
+  console.log('Onboarding: handlers registered (index.js)');
 }
 
 // Безопасная отправка — чтобы видеть ошибки API
@@ -135,43 +136,51 @@ bot.onText(/^\/version$/, (msg) => {
   bot.sendMessage(msg.chat.id, `Версия: ${BUILD.onb}\nCommit: ${short}\nStarted: ${BUILD.startedAt}`);
 });
 
-// Команда для запуска анкеты
-bot.onText(/^\/onboarding$|^🧭\s?Анкета$/i, (msg) => {
-  startOnboarding(bot, msg.chat.id);
-});
+
 
 // Диагностика: показать состояние онбординга
 bot.onText(/^\/onb_state$/, (msg) => {
-  const u = (global.__users && global.__users.get(msg.chat.id)) || {};
+  const u = onbMod.getUser(msg.chat.id);
   const state = u.onb ? { idx: u.onb.idx, waitingIntro: u.onb.waitingIntro, nextKey: (u.onb.idx !== undefined ? 'see logs' : null) } : 'none';
   console.log('ONB STATE', msg.chat.id, u.onb);
   bot.sendMessage(msg.chat.id, 'onb: ' + (u.onb ? JSON.stringify(u.onb, null, 2) : 'none'));
 });
 
-// 2) функция показывающая НИЖНЮЮ reply-клавиатуру
-async function showMainMenu(chatId, text = 'Главное меню') {
-  const keyboard = {
-    keyboard: [
-      [{ text: '• 🏠 Главная' }, { text: '📅 План' }],
-      [{ text: '🍽️ Еда' }, { text: '📝 Отчёты' }],
-      [{ text: '🧭 Анкета' }, { text: '⚙️ Настройки' }]
-    ],
-    resize_keyboard: true,
-    one_time_keyboard: false
-  };
-  return bot.sendMessage(chatId, text, { reply_markup: keyboard });
-}
+// Главное меню (ReplyKeyboard)
+const mainKb = {
+  keyboard: [
+    [{ text: '🏠 Главная' }, { text: '📅 План' }],
+    [{ text: '🍽️ Еда' }, { text: '📝 Отчёты' }],
+    [{ text: '🧭 Анкета' }, { text: '⚙️ Настройки' }],
+  ],
+  resize_keyboard: true,
+  one_time_keyboard: false,
+};
 
-// 3) /start — всегда возвращает нижние кнопки
+// /start
 bot.onText(/^\/start$/, async (msg) => {
   const chatId = msg.chat.id;
-  await showMainMenu(chatId, 'Привет! Я вернул клавиатуру. Выбирай раздел 👇');
+
+  await bot.sendMessage(
+    chatId,
+    'Привет, я Павел — твой персональный тренер! 💪\n\n' +
+    'Готов собрать персональный план на 4 недели и вести тебя по нему. ' +
+    'Нажми «🧭 Анкета», чтобы начать.',
+    { reply_markup: mainKb, parse_mode: 'HTML' }
+  );
+});
+
+// Явный запуск анкеты командой/кнопкой
+bot.onText(/^\/onboarding$|^🧭 Анкета$/, async (msg) => {
+  const chatId = msg.chat.id;
+  // Старт новой анкеты (модуль сам ведёт состояние, наш код больше не лезет внутрь)
+  await onbMod.startOnboarding(bot, chatId);
 });
 
 // 4) /menu — быстрый способ вернуть клавиатуру, если её сняли
 bot.onText(/^\/menu$/, async (msg) => {
   const chatId = msg.chat.id;
-  await showMainMenu(chatId);
+  await bot.sendMessage(chatId, 'Главное меню', { reply_markup: mainKb });
 });
 
 // ===== Диагностика входящих сообщений (временно, можно оставить) =====
@@ -678,19 +687,7 @@ const welcomeText = (u) => {
   );
 };
 
-// ==== KEYBOARDS ====
-// Постоянное главное меню
-const mainKb = {
-  reply_markup: {
-    keyboard: [
-      [{ text: '📅 План' }, { text: '🍽️ Еда' }],
-      [{ text: '📝 Отчёт' }, { text: '📊 Итоги дня' }],
-      [{ text: '🧭 Анкета' }, { text: '🏠 Главная' }]
-    ],
-    resize_keyboard: true,
-    is_persistent: true
-  }
-};
+
 
 // Временная клавиатура-сигнал "готово/отмена" при вводе еды
 const doneKb = {
@@ -772,22 +769,27 @@ async function tryDelete(bot, chatId, msgIdToDelete, keepId) {
 // Включает «режим ожидания отчёта»
 const expectingReport = new Set();
 
+// ГЛАВНЫЙ message-хендлер.
+// ВАЖНО: если пользователь в анкете — НИЧЕГО не делаем тут,
+// всё обрабатывает модуль onboarding-max (он уже повесил свой bot.on('message')).
 bot.on('message', async (msg) => {
-  try {
-    if (!msg.text && !msg.photo) return;
-    const t = msg.text || '';
-    
-    console.log('Handler saw message:', msg.message_id, t);
+  const chatId = msg.chat?.id;
+  if (!chatId) return;
 
-    const chatId = msg.chat?.id; 
-    if (!chatId) return;
+  // Если пользователь сейчас в анкете — выходим
+  if (onbMod.onbState && onbMod.onbState.has(chatId)) {
+    return;
+  }
 
-        // РАННЯЯ проверка онбординга — не мешаем анкете!
-    const onbUser = onbMod?.getUser?.(chatId);
-    if (onbUser?.onb) {
-      console.log('User in onboarding, skipping main handler');
-      return; // не мешаем анкете
-    }
+  // ...дальше твоя логика для Главная/План/Еда/Отчёты/Настройки...
+  // Пример для "🏠 Главная":
+  if (msg.text === '🏠 Главная') {
+    return bot.sendMessage(
+      chatId,
+      '<b>🏠 Главная</b>\nЗдесь будут напоминания и «споки».\nВыбирай экран ниже.',
+      { parse_mode: 'HTML', reply_markup: mainKb }
+    );
+  }
 
     // Фильтр вежливости - проверяем на токсичность
     if (!t.startsWith('/') && looksToxic(t)) {
@@ -997,12 +999,6 @@ bot.on('message', async (msg) => {
       await bot.sendMessage(assertChatId(u.chatId), fb);
       return;
     }
-  }
-  
-
-  
-  } catch (e) {
-    console.error('Handler error:', e); // чтобы процесс не падал
   }
 });
 
