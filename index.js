@@ -2,6 +2,63 @@
 require('dotenv').config();
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
+
+// --- helpers ---
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+async function setWebHookSafe(bot, url, opts, label='setWebHook') {
+  for (let i = 0; i < 4; i++) {
+    try {
+      const ok = await bot.setWebHook(url, opts);
+      return ok;
+    } catch (e) {
+      const is429 = e?.code === 'ETELEGRAM' && e?.response?.statusCode === 429;
+      const ra = e?.response?.body?.parameters?.retry_after ?? 1;
+      if (is429) {
+        console.warn(`[429] ${label}: retry in ${ra}s`);
+        await wait((ra + 0.3) * 1000);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error(`[setWebHookSafe] failed after retries`);
+}
+
+// --- ВСТАВЬ ЭТУ функцию и ВЫЗЫВАЙ вместо своего кода настройки вебхука ---
+async function ensureWebhook(bot) {
+  const base = process.env.WEBHOOK_URL?.replace(/\/+$/, '') || '';
+  const path = process.env.WH_PATH || '/tg/ab12cd34';
+  const secret = process.env.WH_SECRET || 'secret';
+  const url = `${base}${path}`;
+
+  // 1) смотрим текущие настройки
+  const info = await bot.getWebHookInfo(); // Bot API: getWebhookInfo
+  // NB: в node-telegram-bot-api метод называется именно getWebHookInfo
+
+  const needDrop = info.url !== url; // сбрасываем "хвост" только при смене URL
+  const allowed = ['message', 'callback_query'];
+
+  // если уже настроено — выходим
+  const already =
+    info.url === url &&
+    Array.isArray(info.allowed_updates) &&
+    allowed.every(x => info.allowed_updates.includes(x));
+
+  if (already) {
+    console.log('Webhook already OK:', info.url);
+    return;
+  }
+
+  // 2) один-единственный setWebHook
+  console.log('Setting webhook ->', url);
+  await setWebHookSafe(bot, url, {
+    secret_token: secret,
+    allowed_updates: allowed,
+    drop_pending_updates: needDrop
+  }, 'setWebHook(init)');
+  console.log('Webhook set.');
+}
 // Условный импорт OpenAI (только если есть API ключ)
 let oa = null;
 try {
@@ -1076,34 +1133,14 @@ app.listen(PORT, '0.0.0.0', async () => {
     return;
   }
   
-  try {
-    // на всякий случай сносим старую привязку
-    console.log('Deleting old webhook...');
-  await fetch(`https://api.telegram.org/bot${TOKEN}/deleteWebhook`, { method: 'POST' });
-    
-    // ставим новую привязку с секретом и нужными типами апдейтов
-    console.log('Setting new webhook...');
-    const result = await bot.setWebHook(hookUrl, {
-      secret_token: SECRET,  // Telegram пришлёт этот заголовок
-    allowed_updates: ['message', 'callback_query'],
-    drop_pending_updates: true
-  });
-    console.log('Webhook set result:', result);
-    
-    // Обновляем webhook с новыми настройками
-    console.log('Updating webhook with latest settings...');
-    const updateResult = await bot.setWebHook(hookUrl, {
-      secret_token: SECRET,
-      allowed_updates: ['message', 'callback_query'],
-      drop_pending_updates: false // не дропаем апдейты при обновлении
-    });
-    console.log('Webhook update result:', updateResult);
-  } catch (error) {
-    console.error('Webhook setup error:', error);
-    console.error('Error details:', error?.response?.body || error.message);
-  }
-  
-
+  // Инициализируем вебхук
+  (async () => {
+    try {
+      await ensureWebhook(bot);
+    } catch (e) {
+      console.error('Webhook setup error:', e);
+    }
+  })();
 });
 
 // ===== Мини-тест: проверяем инлайн-кнопки и снятие нижней клавиатуры =====
