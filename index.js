@@ -892,7 +892,8 @@ bot.on('message', async (msg) => {
     if (!chatId) return;
 
     // Проверяем, не в процессе анкеты ли пользователь
-    if (onbMod && onbMod.getUser && onbMod.getUser(chatId)?.onb) {
+    const onbUser = onbMod?.getUser?.(chatId);
+    if (onbUser?.onb) {
       console.log('User in onboarding, skipping main handler');
       return; // не мешаем анкете
     }

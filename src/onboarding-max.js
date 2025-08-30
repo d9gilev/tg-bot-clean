@@ -7,7 +7,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 // ---- утилиты ожидания
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-// ---- безопасная отправка (ретраи на 429)
+// ---- безопасная отправка (ретраи на 429 Too Many Requests)
 async function sendSafe(bot, method, args, label = method) {
   for (let i = 0; i < 3; i++) {
     try {
@@ -22,20 +22,20 @@ async function sendSafe(bot, method, args, label = method) {
   throw new Error(`[sendSafe] ${label} failed after retries`);
 }
 
-// ---- пер-чатовая очередь (1 действие в ~1.1 сек на чат)
+// ---- пер-чатовая очередь (≤1 сообщение/сек на чат — требование Telegram)
 const __q = global.__perChatQueue || (global.__perChatQueue = new Map());
 function enqueue(chatId, task) {
   let chain = __q.get(chatId) || Promise.resolve();
   chain = chain.then(async () => {
-    const res = await task();           // выполнить отправку
-    await wait(1100);                   // пауза ~1.1с — вписываемся в лимит Telegram (1 msg/sec в чате)
+    const res = await task();
+    await wait(1300); // 1.3s пауза — с запасом под лимиты
     return res;
-  }).catch(err => { console.error('queue task err', err); });
+  }).catch(err => console.error('queue task err', err));
   __q.set(chatId, chain);
   return chain;
 }
 
-// ---- шорткаты: все АНКЕТНЫЕ отправки через них
+// ---- шорткаты для отправок внутри анкеты
 const sendMsg    = (bot, chatId, text, opts)        => enqueue(chatId, () => sendSafe(bot, 'sendMessage', [chatId, text, opts], 'sendMessage'));
 const editText   = (bot, chatId, msgId, text, opts) => enqueue(chatId, () => sendSafe(bot, 'editMessageText', [{ chat_id: chatId, message_id: msgId, text, ...opts }], 'editMessageText'));
 const editMarkup = (bot, chatId, msgId, markup)     => enqueue(chatId, () => sendSafe(bot, 'editMessageReplyMarkup', [markup, { chat_id: chatId, message_id: msgId }], 'editMessageReplyMarkup'));
@@ -56,6 +56,9 @@ function ensureUser(chatId) {
 
 // Внутри файла используем getUser как алиас ensureUser (на совместимость с прошлым кодом)
 const getUser = ensureUser;
+
+// ---- нормализация текста для сравнения
+function norm(s) { return (s||'').toString().trim().toLowerCase().replace(/ё/g,'е'); }
 
 // Конфигурация вопросов анкеты
 const ONB_QUESTIONS = [
@@ -121,7 +124,7 @@ const ONB_QUESTIONS = [
   { key: "plan_rebuilds_ok", block: "REPORTING", type: "single", prompt: "Разрешаешь корректировать план?", opts: ["Нет", "Да"] },
   { key: "micro_swaps_ok", block: "REPORTING", type: "single", prompt: "Разрешаешь замены упражнений?", opts: ["Нет", "Да"] },
   { key: "month_constraints", block: "REPORTING", type: "text", prompt: "Ограничения на месяц (командировки, отпуск):", optional: true },
-  { key: "reminder_mode", block: "REPORTING", type: "single", prompt: "Режим напоминаний:", opts: ["Мягкий", "Средний", "Жёсткий"] }
+  { key: "reminder_mode", block: "REPORTING", type: "single", prompt: "Режим напоминаний/«пинков»:", opts: ["Мягкий", "Жёсткий", "Выключено"] }
 ];
 
 // Состояние анкеты по чатам
@@ -345,7 +348,40 @@ function registerOnboarding(bot) {
     const currentQuestion = ONB_QUESTIONS[state.idx];
     if (!currentQuestion) return;
     
-    // Валидируем ответ
+    // Fallback для single-вопросов (если пользователь написал текстом)
+    if (currentQuestion.type === 'single') {
+      const t = norm(msg.text || '');
+      if (t) {
+        // общие совпадения по опциям
+        const hit = (currentQuestion.opts || []).find(o => norm(o) === t) 
+          // дополнительные синонимы именно для reminder_mode
+          || (currentQuestion.key === 'reminder_mode' && (
+                (['жесткий','hard','крепкий'].includes(t) && 'Жёсткий') ||
+                (['мягкий','soft','лайт'].includes(t) && 'Мягкий') ||
+                (['выкл','off','нет','выключено'].includes(t) && 'Выключено')
+             ));
+
+        if (hit) {
+          state.answers[currentQuestion.key] = typeof hit === 'string' ? hit : hit.toString();
+          state.idx++;
+          await wait(150);
+          await _sendQuestion(bot, chatId);
+          return;
+        }
+      }
+
+      // если текст не распознан — повторно покажем варианты кнопками
+      await sendMsg(bot, chatId, 'Выбери вариант кнопкой ниже 👇', { 
+        reply_markup: { 
+          keyboard: [currentQuestion.opts.map(opt => ({ text: opt }))],
+          resize_keyboard: true,
+          one_time_keyboard: true
+        } 
+      });
+      return;
+    }
+    
+    // Валидируем ответ для других типов
     const validation = validateAnswer(currentQuestion, msg.text);
     if (!validation.ok) {
       await sendMsg(bot, chatId, validation.err);
