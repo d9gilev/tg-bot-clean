@@ -4,33 +4,42 @@
 const OpenAI = require('openai');
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ---- Безопасная отправка в Telegram с ретраем на 429 (Too Many Requests)
+// ---- утилиты ожидания
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+// ---- безопасная отправка (ретраи на 429)
 async function sendSafe(bot, method, args, label = method) {
   for (let i = 0; i < 3; i++) {
     try {
       return await bot[method](...args);
     } catch (e) {
-      // Если словили 429 — подождём и попробуем ещё раз
-      const is429 = e && e.code === 'ETELEGRAM' && e.response && e.response.statusCode === 429;
-      if (is429) {
-        const ra = e.response?.body?.parameters?.retry_after ?? 1;
-        console.warn(`[429] ${label}: retry in ${ra}s`);
-        await wait((ra + 0.5) * 1000);
-        continue;
-      }
+      const is429 = e && e.code === 'ETELEGRAM' && e.response?.statusCode === 429;
+      const ra = e?.response?.body?.parameters?.retry_after ?? 1;
+      if (is429) { console.warn(`[429] ${label}: retry in ${ra}s`); await wait((ra + 0.3) * 1000); continue; }
       throw e;
     }
   }
-  // Если 3 попытки не помогли — пробрасываем
   throw new Error(`[sendSafe] ${label} failed after retries`);
 }
 
-// Удобные шорткаты:
-const sendMsg   = (bot, chatId, text, opts) => sendSafe(bot, 'sendMessage', [chatId, text, opts], 'sendMessage');
-const editText  = (bot, chatId, msgId, text, opts) => sendSafe(bot, 'editMessageText', [{ chat_id: chatId, message_id: msgId, text, ...opts }], 'editMessageText');
-const editMarkup= (bot, chatId, msgId, markup) => sendSafe(bot, 'editMessageReplyMarkup', [markup, { chat_id: chatId, message_id: msgId }], 'editMessageReplyMarkup');
-const answerCb  = (bot, qid, opts) => sendSafe(bot, 'answerCallbackQuery', [qid, opts], 'answerCallbackQuery');
+// ---- пер-чатовая очередь (1 действие в ~1.1 сек на чат)
+const __q = global.__perChatQueue || (global.__perChatQueue = new Map());
+function enqueue(chatId, task) {
+  let chain = __q.get(chatId) || Promise.resolve();
+  chain = chain.then(async () => {
+    const res = await task();           // выполнить отправку
+    await wait(1100);                   // пауза ~1.1с — вписываемся в лимит Telegram (1 msg/sec в чате)
+    return res;
+  }).catch(err => { console.error('queue task err', err); });
+  __q.set(chatId, chain);
+  return chain;
+}
+
+// ---- шорткаты: все АНКЕТНЫЕ отправки через них
+const sendMsg    = (bot, chatId, text, opts)        => enqueue(chatId, () => sendSafe(bot, 'sendMessage', [chatId, text, opts], 'sendMessage'));
+const editText   = (bot, chatId, msgId, text, opts) => enqueue(chatId, () => sendSafe(bot, 'editMessageText', [{ chat_id: chatId, message_id: msgId, text, ...opts }], 'editMessageText'));
+const editMarkup = (bot, chatId, msgId, markup)     => enqueue(chatId, () => sendSafe(bot, 'editMessageReplyMarkup', [markup, { chat_id: chatId, message_id: msgId }], 'editMessageReplyMarkup'));
+const answerCb   = (bot, qid, chatId, opts)         => enqueue(chatId, () => sendSafe(bot, 'answerCallbackQuery', [qid, opts], 'answerCallbackQuery'));
 
 // --- SAFE user store: модуль сам хранит пользователей и не зависит от внешних getUser ---
 const __users = global.__users || (global.__users = new Map());
@@ -239,7 +248,9 @@ async function finishOnboarding(bot, chatId) {
     resize_keyboard: true,
     one_time_keyboard: false
   };
-  await sendMsg(bot, chatId, summary, { reply_markup: keyboard });
+  await sendMsg(bot, chatId, 'Супер! Я собрал все данные. Нажми «Сформировать план» для создания персональной программы.', {
+    reply_markup: { inline_keyboard: [[{ text:'Сформировать план ▶️', callback_data:'plan:build' }]] }
+  });
 }
 
 // Функция создания плана из ответов (базовая версия)
@@ -320,9 +331,64 @@ const mainKb = {
 
 // Регистрация обработчиков анкеты
 function registerOnboarding(bot) {
-  // Обработчик ответов на вопросы анкеты будет добавлен в основной файл
-  // Здесь только инициализация состояния
-  console.log('Onboarding module loaded');
+  // Обработчик ответов на вопросы анкеты
+  bot.on('message', async (msg) => {
+    const chatId = msg.chat?.id;
+    if (!chatId || !msg.text) return;
+    
+    const u = getUser(chatId);
+    if (!u?.onb) return; // не в анкете
+    
+    const state = onbState.get(chatId);
+    if (!state) return;
+    
+    const currentQuestion = ONB_QUESTIONS[state.idx];
+    if (!currentQuestion) return;
+    
+    // Валидируем ответ
+    const validation = validateAnswer(currentQuestion, msg.text);
+    if (!validation.ok) {
+      await sendMsg(bot, chatId, validation.err);
+      return;
+    }
+    
+    // Сохраняем ответ
+    state.answers[currentQuestion.key] = validation.val;
+    state.idx++;
+    
+    // Микропауза перед следующим вопросом
+    await wait(120);
+    await _sendQuestion(bot, chatId);
+  });
+  
+  console.log('Onboarding module loaded with message handler');
+  
+  // Обработчик callback_query для кнопок "ОК ✅"
+  bot.on('callback_query', async (q) => {
+    const chatId = q.message?.chat?.id;
+    if (!chatId) return;
+    
+    const u = getUser(chatId);
+    if (!u?.onb) return; // не в анкете
+    
+    const data = q.data || '';
+    
+    // Обработка "ОК ✅" кнопок
+    if (data.startsWith('onb:ok:')) {
+      const block = data.split(':')[2];
+      u.onb.introShown[block] = true;
+      await answerCb(bot, q.id, chatId, { text: 'Ок' });
+      await _sendQuestion(bot, chatId);
+      return;
+    }
+    
+    // Обработка "Сформировать план ▶️"
+    if (data === 'plan:build') {
+      await answerCb(bot, q.id, chatId, { text: 'Делаю план…' });
+      await finishOnboarding(bot, chatId);
+      return;
+    }
+  });
 }
 
 // Функция запуска анкеты
