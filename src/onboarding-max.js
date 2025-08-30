@@ -31,7 +31,7 @@ function enqueue(chatId, task) {
   let chain = __q.get(chatId) || Promise.resolve();
   chain = chain.then(async () => {
     const res = await task();
-    await wait(1100); // пауза с запасом
+    await wait(1300); // пауза с запасом (увеличено для надёжности)
     return res;
   }).catch(err => console.error('queue task err', err));
   __q.set(chatId, chain);
@@ -271,35 +271,98 @@ function fallbackPlan(ans){
   };
 }
 
-async function generatePlanFromAnswersGPT(ans){
+function parseJsonLoose(s) {
+  try { return JSON.parse(s); } catch (_) {}
+  const a = s.indexOf('{'), b = s.lastIndexOf('}');
+  if (a>=0 && b>a) { try { return JSON.parse(s.slice(a, b+1)); } catch (_) {} }
+  return null;
+}
+
+function planSystemPromptRus() {
+  return `
+Ты — профессиональный тренер и нутриционист. Генерируешь персональный МЕСЯЧНЫЙ план на основе анкеты.
+Требования:
+- ВОЗ 2020 (150–300 мин/нед умеренная + силовые ≥2/нед), сон ≥7 ч (AASM/SRS), белок ~1.6 г/кг/сут (Morton 2018), креатин 3–5 г/д (ISSN), вода — EFSA (2.5 л муж., 2.0 л жен.), калории — Mifflin–St Jeor.
+- Учитывай PAR-Q+/ACSM. При рисках — снизить интенсивность/пометки.
+- Обращайся к пользователю по имени, иногда склоняй (умеренно).
+- Вывод ТОЛЬКО как один JSON по схеме, без комментариев. В rich_text положи HTML для Telegram (красивое расписание по дням).
+{
+  "user": { "name":"...", "tz":"..." },
+  "goals": { "primary":"...", "secondary":[...], "kpi_month":"...", "target_weight_change_month_kg": -1.5 },
+  "training": { "days_per_week":3, "session_length_min":75, "schedule_week":[ { "day":"Понедельник", "focus":["Грудь","Трицепс"], "exercises":[{"name":"Жим лёжа","sets":4,"reps":"6–8","rpe":"7–8","rest_sec":120}], "cardio_z2_min":20 } ] },
+  "nutrition": { "kcal_method":"Mifflin-St Jeor", "target_kcal": 2200, "protein_g_per_kg":1.6, "meals_per_day":4, "water_ai_l":2.5 },
+  "recovery": { "sleep_target_h": ">=7" },
+  "cardio": { "z2_definition":"...", "weekly_total_min":90 },
+  "reporting": { "style":"Сразу после тренировки" },
+  "limits": { "food_logs_per_day_limit":4 },
+  "rich_text": { "intro_html":"<b>...HTML...</b>", "week_overview_html":"<b>Понедельник — ...</b> ..." }
+}
+`;
+}
+
+async function generatePlanFromAnswersGPT_JSON(ans, openai) {
   if (!openai) return null;
-  const name = ans.name || 'клиент';
-  const sys = `Ты — профессиональный тренер и нутрициолог. Составь план на 4 недели.
-Выводи кратко, но структурно, в HTML для Telegram. Используй имя в разных формах по-русски.`;
-  const user = {
-    name, sex:ans.sex, age:ans.age, height_cm:ans.height_cm, weight_kg:ans.weight_kg, tz:ans.tz,
-    goal:ans.goal, weight_loss_month_kg:ans.weight_loss_month_kg, weight_gain_month_kg:ans.weight_gain_month_kg,
-    level:ans.level, rpe_ready:ans.rpe_ready, days_per_week:ans.days_per_week, session_length:ans.session_length,
-    equipment:ans.equipment, dislikes:ans.dislikes, cardio_pref:ans.cardio_pref,
-    diet_limits:ans.diet_limits, track_style:ans.track_style, meals_per_day:ans.meals_per_day, water_ready:ans.water_ready,
-    sleep_hours:ans.sleep_hours, stress_level:ans.stress_level, steps_level:ans.steps_level,
-    z2_after_lifts:ans.z2_after_lifts, swim_ok:ans.swim_ok, steps_goal_ok:ans.steps_goal_ok,
-    creatine_ok:ans.creatine_ok, omega_vitd:ans.omega_vitd, reminder_mode:ans.reminder_mode
+
+  // сгладим разные имена полей
+  const meds_affecting = ans.meds_affecting_ex ?? ans.meds_affecting;
+
+  const payload = {
+    user: {
+      name: ans.name || 'клиент',
+      sex: ans.sex, age: ans.age, height_cm: ans.height_cm, weight_kg: ans.weight_kg,
+      tz: ans.tz
+    },
+    goals: {
+      primary: ans.goal,
+      secondary: (ans.secondary_goals || '').split(',').map(s=>s.trim()).filter(Boolean),
+      kpi_month: ans.goal_kpi || null,
+      target_weight_change_month_kg: ans.weight_loss_month_kg ? -Math.abs(ans.weight_loss_month_kg) :
+                                     ans.weight_gain_month_kg ?  Math.abs(ans.weight_gain_month_kg) : 0
+    },
+    screening: {
+      medical_flags: ans.medical_flags,
+      meds_affecting, meds_list: ans.meds_list,
+      clotting_issue: ans.clotting_issue,
+      pregnancy_status: ans.pregnancy_status,
+      cardio_symptoms_now: ans.cardio_symptoms,
+      injury_notes: ans.injury_notes
+    },
+    training: {
+      days_per_week: Number(ans.days_per_week) || 3,
+      session_length: ans.session_length,
+      equipment: (ans.equipment||'').split(',').map(s=>s.trim()).filter(Boolean),
+      avoid: (ans.dislikes||'').split(',').map(s=>s.trim()).filter(Boolean),
+      rpe_ready: ans.rpe_ready
+    },
+    cardio: { z2_after_lifts: ans.z2_after_lifts, swim_ok: ans.swim_ok, steps_goal_ok: ans.steps_goal_ok },
+    nutrition: {
+      track_style: ans.track_style,
+      meals_per_day: ans.meals_per_day,
+      diet_limits: (ans.diet_limits||'').split(',').map(s=>s.trim()).filter(Boolean),
+      water_ready: ans.water_ready
+    },
+    recovery: { sleep_hours: ans.sleep_hours, stress_level: ans.stress_level, steps_level: ans.steps_level },
+    reporting: {
+      creatine_ok: ans.creatine_ok, omega_vitd: ans.omega_vitd,
+      plan_rebuilds_ok: ans.plan_rebuilds_ok, micro_swaps_ok: ans.micro_swaps_ok,
+      reminder_mode: ans.reminder_mode, month_constraints: ans.month_constraints
+    }
   };
 
-  const content = JSON.stringify(user);
-  const model = process.env.OPENAI_MODEL_PLAN || 'gpt-4o-mini';
+  const sys = planSystemPromptRus();
+  const model = process.env.OPENAI_MODEL_PLAN || 'gpt-4o';
 
   const resp = await openai.chat.completions.create({
     model,
+    temperature: 0.3,
     messages: [
-      { role:'system', content: sys },
-      { role:'user',   content: `Собери план на месяц по данным:\n${content}\nТребования к формату: 
-1) Заголовок, затем блоки: Расписание (дни недели → мышцы/упр./подходы/повторы/RPE/отдых), Кардио Z2 (объём/частота), Питание (ккал, белок г/кг, приёмы пищи), Вода (мл/день), Сон (цель), Напоминания (окна), Отчётность (что присылать), Ограничения.\n2) Пиши читабельно, списками / подзаголовками, без «воды».` }
-    ],
-    temperature: 0.4
+      { role: 'system', content: sys },
+      { role: 'user', content: 'Сгенерируй план по анкете (выведи ТОЛЬКО один JSON):\n' + JSON.stringify(payload) }
+    ]
   });
-  return resp.choices?.[0]?.message?.content || null;
+
+  const text = resp.choices?.[0]?.message?.content || '';
+  return parseJsonLoose(text);
 }
 
 // ==== Registration ==========================================================================
@@ -419,27 +482,92 @@ function registerOnboarding(bot){
     // построить план
     if (data === 'plan:build') {
       await answerCb(bot, q.id, chatId, { text:'Собираю план…' });
+
       const ans = getUser(chatId)?.onbAnswers || {};
-      let planHtml = null;
+      let planJson = null;
+
       try {
-        planHtml = await generatePlanFromAnswersGPT(ans);
-      } catch(e) {
+        planJson = await generatePlanFromAnswersGPT_JSON(ans, openai);
+      } catch (e) {
         console.error('GPT plan error', e);
       }
-      if (!planHtml) {
+
+      // fallback, если GPT выключен или ответ пустой
+      if (!planJson) {
         const fb = fallbackPlan(ans);
-        planHtml =
+        const html =
 `<b>План на 4 недели</b>
 <b>Питание:</b> ~${fb.kcal} ккал/день, белок ~${fb.protein_g_per_kg} г/кг.
 <b>Вода:</b> ~${fb.water_ml} мл, <b>сон:</b> ⩾${fb.sleep_h} ч.
 <b>Силовые ${fb.days}×/нед:</b> ${fb.sessions.join(' · ')}.
-<b>Кардио Z2:</b> 20–30 мин по согласованию.`;
-      }
-      await sendMsg(bot, chatId, planHtml, { parse_mode:'HTML' });
+<b>Кардио Z2:</b> 20–30 мин 2–3×/нед после силовой.`;
 
-      // закрепим основные переменные в профиле пользователя
+        const u = getUser(chatId);
+        const start = new Date(); const end = new Date(); end.setDate(start.getDate()+30);
+        u.plan = {
+          goal: ans.goal,
+          days_per_week: Number(ans.days_per_week)||3,
+          session_length: ans.session_length || '60 мин',
+          daily_kcal: fb.kcal,
+          protein_g_per_kg: 1.6,
+          meals_limit: Number(ans.meals_per_day)||4,
+          water_goal_ml: fb.water_ml,
+          sleep_goal_h: fb.sleep_h,
+          workouts: fb.sessions,
+          creatine_ok: ans.creatine_ok === 'Да',
+          plan_start: start.toISOString(),
+          plan_end: end.toISOString(),
+          plan_status: 'active'
+        };
+        await sendMsg(bot, chatId, html, { parse_mode:'HTML' });
+        await sendMsg(bot, chatId, 'Готово! Возвращаюсь в меню.', {
+          reply_markup: {
+            keyboard: [
+              [{ text:'🏠 Главная' }, { text:'📅 План' }],
+              [{ text:'🍽️ Еда' },   { text:'📝 Отчёты' }],
+              [{ text:'🧭 Анкета' }, { text:'⚙️ Настройки' }]
+            ],
+            resize_keyboard:true
+          }
+        });
+        return;
+      }
+
+      // Раскладка JSON в u.plan
       const u = getUser(chatId);
-      u.plan = { builtAt: new Date().toISOString(), html: planHtml };
+      const start = new Date(); const end = new Date(); end.setDate(start.getDate()+30);
+
+      u.name = planJson.user?.name || ans.name || u.name || 'Друг';
+      u.tz   = planJson.user?.tz   || ans.tz   || u.tz   || 'Europe/Moscow';
+
+      const days = planJson.training?.days_per_week || Number(ans.days_per_week)||3;
+      const sessMin = planJson.training?.session_length_min;
+      const meals = Number(planJson.nutrition?.meals_per_day) || (ans.meals_per_day ? Number(ans.meals_per_day) : 4);
+
+      u.plan = {
+        goal: planJson.goals?.primary || ans.goal,
+        days_per_week: days,
+        session_length: sessMin ? `${sessMin} мин` : (ans.session_length || '60 мин'),
+        daily_kcal: planJson.nutrition?.target_kcal || undefined,
+        protein_g_per_kg: planJson.nutrition?.protein_g_per_kg || 1.6,
+        meals_limit: meals,
+        water_goal_ml: Math.round((planJson.nutrition?.water_ai_l || (ans.sex==='М'?2.5:2.0)) * 1000),
+        sleep_goal_h: Number(String(planJson.recovery?.sleep_target_h || '7').replace(/[^\d]/g,'')) || 7,
+        workouts: (planJson.training?.schedule_week || []).map(d => d.day).filter(Boolean),
+        creatine_ok: (ans.creatine_ok === 'Да') || (planJson.reporting?.creatine_ok === true),
+        plan_start: start.toISOString(),
+        plan_end: end.toISOString(),
+        plan_status: 'active'
+      };
+
+      // Сохраним красивый HTML, если вернулся
+      const html = planJson.rich_text?.week_overview_html || planJson.rich_text?.intro_html;
+      if (html) {
+        await sendMsg(bot, chatId, html, { parse_mode:'HTML' });
+      } else {
+        await sendMsg(bot, chatId, '<b>План готов.</b> Открой «📅 План», чтобы посмотреть детали.', { parse_mode:'HTML' });
+      }
+
       await sendMsg(bot, chatId, 'Готово! Возвращаюсь в меню.', {
         reply_markup: {
           keyboard: [

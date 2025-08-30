@@ -406,7 +406,7 @@ const PLAN_SCHEMA = `
   "screening": {
     "flags": {
       "medical_flags": "Да|Нет",
-      "meds_affecting_ex": "Да|Нет",
+      "meds_affecting": "Да|Нет",
       "clotting_issue": "Да|Нет",
       "pregnancy_status": "Не актуально|Актуально",
       "cardio_symptoms_now": "Да|Нет"
