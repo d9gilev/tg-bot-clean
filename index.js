@@ -115,6 +115,65 @@ if (!global.__ONB_REG__) {
   console.log('Onboarding: handlers registered (index.js)');
 }
 
+// Разрешённые HTML-теги в Telegram
+const TG_ALLOWED_TAGS = [
+  'b','strong','i','em','u','ins','s','strike','del','code','pre','a','tg-spoiler','span' // span только с class="tg-spoiler"
+];
+
+// Мини-санитайзер под Telegram HTML
+function sanitizeHtmlForTelegram(html) {
+  return String(html)
+    // 1) <br> -> \n
+    .replace(/<br\s*\/?>/gi, '\n')
+    // 2) Нормализуем перевод строк
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    // 3) Выкидываем любые теги кроме разрешённых
+    .replace(/<(\/)?([a-z0-9-]+)([^>]*)>/gi, (m, closing, tag, attrs) => {
+      tag = tag.toLowerCase();
+      if (!TG_ALLOWED_TAGS.includes(tag)) return ''; // сносим неразрешённые
+      if (tag === 'span' && !/class=["']tg-spoiler["']/.test(attrs)) return ''; // для span разрешаем только tg-spoiler
+      return `<${closing ? '/' : ''}${tag}${attrs}>`;
+    });
+}
+
+// Безопасная отправка HTML: пытаемся в HTML, при ошибке — plain text
+async function safeSendHTML(bot, chatId, html, extra = {}) {
+  const text = sanitizeHtmlForTelegram(html);
+  try {
+    return await bot.sendMessage(chatId, text, {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      ...extra,
+    });
+  } catch (err) {
+    const desc = err?.response?.body?.description || '';
+    if (err.code === 'ETELEGRAM' && /can't parse entities/i.test(desc)) {
+      const plain = text.replace(/<[^>]+>/g, ''); // выкидываем остатки тегов
+      return await bot.sendMessage(chatId, plain, { disable_web_page_preview: true, ...extra });
+    }
+    throw err;
+  }
+}
+
+// Хелпер на случай очень длинных сообщений
+async function sendLongHTML(bot, chatId, html, extra = {}) {
+  const chunks = String(html).match(/[\s\S]{1,3500}(?=\n|$)/g) || [];
+  for (const part of chunks) {
+    await safeSendHTML(bot, chatId, part, extra);
+  }
+}
+
+// Пример построения текста плана (замени своим конструктором данных)
+function buildPlanMessage(plan) {
+  const lines = [
+    `<b>Понедельник</b> — Грудь и трицепс: Жим лёжа 4x6–8, кардио 20 мин.`,
+    `<b>Среда</b> — Спина и бицепс: Тяга верхнего блока 4x8–10, кардио 20 мин.`,
+    `<b>Пятница</b> — Ноги и плечи: Приседания 4x8–10, кардио 20 мин.`,
+  ];
+  return lines.join('\n'); // ← ВАЖНО: переносы строк через \n
+}
+
 // Безопасная отправка — чтобы видеть ошибки API
 const safeSend = (chatId, text, opts) =>
   bot.sendMessage(chatId, text, opts).catch(err => {
