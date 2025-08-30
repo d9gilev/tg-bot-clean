@@ -1,5 +1,9 @@
 // === ПОЛНЫЙ БЛОК АНКЕТЫ ===
 
+// Импорт OpenAI SDK
+const OpenAI = require('openai');
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
 // Конфигурация вопросов анкеты
 const ONB_QUESTIONS = [
   // БЛОК: ИДЕНТИЧНОСТЬ
