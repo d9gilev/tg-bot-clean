@@ -71,8 +71,8 @@ try {
 }
 const cron = require('node-cron');
 
-// === Onboarding module (единый источник правды) ===
-const onbMod = require('./src/onboarding-max'); // <- ВАЖНО: именно так
+// Подключаем модуль анкеты ОДИН раз
+const onbMod = require('./src/onboarding-max');
 
 // ===== Версия/диагностика, чтобы видеть свежий деплой =====
 const BUILD = {
@@ -183,16 +183,7 @@ bot.onText(/^\/menu$/, async (msg) => {
   await bot.sendMessage(chatId, 'Главное меню', { reply_markup: mainKb });
 });
 
-// ===== Диагностика входящих сообщений (временно, можно оставить) =====
-bot.on('message', (m) => {
-  if (!m?.chat?.id) return;
-  console.log('DBG msg:', m.chat.id, JSON.stringify(m.text || m.caption || '(non-text)'));
-});
 
-// ===== Ловушка для callback_query =====
-bot.on('callback_query', (q) => {
-  console.log('CQ:', q.data, 'from', q.from?.id);
-});
 
 
 
@@ -769,102 +760,76 @@ async function tryDelete(bot, chatId, msgIdToDelete, keepId) {
 // Включает «режим ожидания отчёта»
 const expectingReport = new Set();
 
-// ГЛАВНЫЙ message-хендлер.
-// ВАЖНО: если пользователь в анкете — НИЧЕГО не делаем тут,
-// всё обрабатывает модуль onboarding-max (он уже повесил свой bot.on('message')).
+function looksToxic(s) {
+  // минимальный словарик, без фанатизма
+  const bad = [
+    /ху(й|и|я|е)/i,
+    /пизд/i,
+    /мраз/i,
+    /гавно|говн/i,
+    /идиот|дебил|туп/i
+  ];
+  return bad.some(rx => rx.test(s));
+}
+
 bot.on('message', async (msg) => {
-  const chatId = msg.chat?.id;
-  if (!chatId) return;
+  try {
+    const chatId = msg.chat?.id;
+    const textRaw = (msg.text ?? '').toString();
+    if (!chatId) return;
 
-  // Если пользователь сейчас в анкете — выходим
-  if (onbMod.onbState && onbMod.onbState.has(chatId)) {
-    return;
-  }
+    // Если сейчас идёт анкета — даём рулить модулю анкеты и выходим
+    if (onbMod.onbState?.has(chatId)) return;
 
-  // ...дальше твоя логика для Главная/План/Еда/Отчёты/Настройки...
-  // Пример для "🏠 Главная":
-  if (msg.text === '🏠 Главная') {
-    return bot.sendMessage(
-      chatId,
-      '<b>🏠 Главная</b>\nЗдесь будут напоминания и «споки».\nВыбирай экран ниже.',
-      { parse_mode: 'HTML', reply_markup: mainKb }
-    );
-  }
+    // Чистим пробелы и делаем нижний регистр для проверок
+    const t = textRaw.trim();
+    const tl = t.toLowerCase();
 
-    // Фильтр вежливости - проверяем на токсичность
-    if (!t.startsWith('/') && looksToxic(t)) {
-      const reply = WITTY[Math.floor(Math.random() * WITTY.length)];
-      await bot.sendMessage(chatId, reply);
-      return; // НЕ учитываем как еду/отчёт
-    }
-
-    // Приём еды в новом формате "Еда: ..."
-    if (expectingFood.has(chatId)) {
-      // отмена
-      if (/^\/?cancel$|^отмена$/i.test(t)) {
-        expectingFood.delete(chatId);
-        return bot.sendMessage(chatId, 'Ок, отменил.');
-      }
-
-      const m = /^еда\s*[:\-]\s*(.+)$/i.exec(t);
-      if (!m) return; // пользователь написал что-то иное
-
-      const desc = m[1].trim();
-      const u = getUser(chatId);
-      const today = new Date().toISOString().slice(0,10);
-      
-      if (!u.food) u.food = {};
-      if (!u.food[today]) u.food[today] = [];
-
-      // лимит 4/день
-      if (u.food[today].length >= 4) {
-        expectingFood.delete(chatId);
-        return bot.sendMessage(chatId, 'Лимит на сегодня исчерпан — съешь яблочко! 🍎');
-      }
-
-      // сохраняем запись
-      u.food[today].push({ at: Date.now(), text: desc });
-      const left = 4 - u.food[today].length;
-
-      expectingFood.delete(chatId);
-
-      // Компактная квитанция + быстрые кнопки
-      await bot.sendMessage(chatId,
-        `🍽️ Записал: ${desc}\nОсталось приёмов: ${left}/4`,
-        {
-          reply_markup: {
-            inline_keyboard: [
-              left > 0 ? [{ text:'Добавить ещё', callback_data:'food:more' }] : [],
-              [{ text:'Итоги дня', callback_data:'food:summary' }, { text:'↩️ Домой', callback_data:'nav:home' }]
-            ].filter(r => r.length)
-          }
-        }
+    // 1) Фильтр «токсика» (работает только для НЕ-команд)
+    //    Команды вида /start, /onboarding и т.п. не трогаем.
+    if (t && !t.startsWith('/') && looksToxic(tl)) {
+      await bot.sendMessage(
+        chatId,
+        'Хм… необычный выбор слов 😏 Давай держать диалог конструктивно и вернёмся к плану тренировок.'
       );
       return;
     }
-  
-  const u = getUser(msg.chat.id);
 
-  // завершение/отмена
-  if (t === '✅ Готово') {
-    u.awaitingMeal = false;
-    await sendOrUpdateHome(bot, msg.chat.id);
-    await bot.sendMessage(msg.chat.id, 'Готово! Возвращаю главное меню.', mainKb);
-    return;
-  }
-  if (t === '↩️ Отмена') {
-    u.awaitingMeal = false;
-    await bot.sendMessage(msg.chat.id, 'Отменил ввод. Возвращаюсь в главное меню.', mainKb);
-    return;
-  }
+    // 2) Нормальная маршрутизация по основным кнопкам / командам
+    if (t === '/start') {
+      return sendWelcome(bot, chatId); // ваш текущий приветственный блок
+    }
 
-  // если ждём еду — обрабатываем ввод
-  if (u.awaitingMeal) {
-    // соберём текст
-    let mealText = '';
-    if (msg.text) mealText = msg.text.trim();
-    if (!mealText && msg.caption) mealText = msg.caption.trim();
-    const hasPhoto = !!(msg.photo && msg.photo.length);
+    if (t === '/onboarding' || t === '🧭 Анкета') {
+      return onbMod.startOnboarding(bot, chatId);
+    }
+
+    if (t === '🏠 Главная' || t === '• 🏠 Главная') {
+      return showHome(bot, chatId); // ваша функция отрисовки «Главная»
+    }
+
+    if (t === '📅 План') {
+      return showPlan(bot, chatId); // ваша функция показа плана
+    }
+
+    if (t === '🍽️ Еда') {
+      return enterFoodFlow(bot, chatId); // ваш блок учёта еды
+    }
+
+    if (t === '📝 Отчёты') {
+      return enterReportFlow(bot, chatId); // ваш блок отчётов
+    }
+
+    if (t === '⚙️ Настройки') {
+      return showSettings(bot, chatId); // ваша страница настроек
+    }
+
+    // Фолбэк: если ничего из выше — покажем подсказку
+    await bot.sendMessage(chatId, 'Выбери действие на клавиатуре ниже или набери /onboarding для персонализации.');
+  } catch (err) {
+    console.error('Handler error:', err);
+  }
+});
 
     if (!mealText && !hasPhoto) return;
 
