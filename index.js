@@ -115,63 +115,62 @@ if (!global.__ONB_REG__) {
   console.log('Onboarding: handlers registered (index.js)');
 }
 
-// Разрешённые HTML-теги в Telegram
-const TG_ALLOWED_TAGS = [
-  'b','strong','i','em','u','ins','s','strike','del','code','pre','a','tg-spoiler','span' // span только с class="tg-spoiler"
-];
-
-// Мини-санитайзер под Telegram HTML
+// --- helpers: безопасная отправка HTML в Telegram ---
 function sanitizeHtmlForTelegram(html) {
-  return String(html)
-    // 1) <br> -> \n
-    .replace(/<br\s*\/?>/gi, '\n')
-    // 2) Нормализуем перевод строк
-    .replace(/\r\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    // 3) Выкидываем любые теги кроме разрешённых
-    .replace(/<(\/)?([a-z0-9-]+)([^>]*)>/gi, (m, closing, tag, attrs) => {
-      tag = tag.toLowerCase();
-      if (!TG_ALLOWED_TAGS.includes(tag)) return ''; // сносим неразрешённые
-      if (tag === 'span' && !/class=["']tg-spoiler["']/.test(attrs)) return ''; // для span разрешаем только tg-spoiler
-      return `<${closing ? '/' : ''}${tag}${attrs}>`;
-    });
+  if (!html) return '';
+  let t = String(html);
+
+  // 1) Превращаем <br> в \n (т.к. <br> в Telegram HTML не поддерживается)
+  t = t.replace(/<br\s*\/?>/gi, '\n');
+
+  // 2) Необязательное: <p> как пустая строка
+  t = t.replace(/<\/?p\s*>/gi, '\n\n');
+
+  // 3) Чуть чистим лишние переводы
+  t = t.replace(/\n{3,}/g, '\n\n').trim();
+
+  return t;
 }
 
-// Безопасная отправка HTML: пытаемся в HTML, при ошибке — plain text
+function chunkText(text, max = 4000) { // запас от 4096
+  const chunks = [];
+  let rest = text;
+  while (rest.length > max) {
+    // стараться резать по границе строки
+    let cut = rest.lastIndexOf('\n', max);
+    if (cut < 0 || cut < max * 0.5) cut = max;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
 async function safeSendHTML(bot, chatId, html, extra = {}) {
   const text = sanitizeHtmlForTelegram(html);
-  try {
-    return await bot.sendMessage(chatId, text, {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-      ...extra,
-    });
-  } catch (err) {
-    const desc = err?.response?.body?.description || '';
-    if (err.code === 'ETELEGRAM' && /can't parse entities/i.test(desc)) {
-      const plain = text.replace(/<[^>]+>/g, ''); // выкидываем остатки тегов
-      return await bot.sendMessage(chatId, plain, { disable_web_page_preview: true, ...extra });
-    }
-    throw err;
+  const parts = chunkText(text);
+  for (const part of parts) {
+    await bot.sendMessage(chatId, part, { parse_mode: 'HTML', ...extra });
   }
 }
 
-// Хелпер на случай очень длинных сообщений
-async function sendLongHTML(bot, chatId, html, extra = {}) {
-  const chunks = String(html).match(/[\s\S]{1,3500}(?=\n|$)/g) || [];
-  for (const part of chunks) {
-    await safeSendHTML(bot, chatId, part, extra);
-  }
+// --- генерация текста плана без <br> ---
+function renderPlanText(planData) {
+  // Здесь ваш реальный рендер. Главное — НИКАКИХ <br>, только \n.
+  // Пример ниже взят из ваших логов, просто переписан на \n:
+  return [
+    '<b>Понедельник</b> — Грудь и трицепс: Жим лёжа 4x6–8, кардио 20 мин.',
+    '<b>Среда</b> — Спина и бицепс: Тяга верхнего блока 4x8–10, кардио 20 мин.',
+    '<b>Пятница</b> — Ноги и плечи: Приседания 4x8–10, кардио 20 мин.'
+  ].join('\n');
 }
 
-// Пример построения текста плана (замени своим конструктором данных)
-function buildPlanMessage(plan) {
-  const lines = [
-    `<b>Понедельник</b> — Грудь и трицепс: Жим лёжа 4x6–8, кардио 20 мин.`,
-    `<b>Среда</b> — Спина и бицепс: Тяга верхнего блока 4x8–10, кардио 20 мин.`,
-    `<b>Пятница</b> — Ноги и плечи: Приседания 4x8–10, кардио 20 мин.`,
-  ];
-  return lines.join('\n'); // ← ВАЖНО: переносы строк через \n
+// --- showPlan: была ошибка ReferenceError — теперь есть реализация ---
+async function showPlan(bot, chatId, ctx) {
+  // Достаньте реальные данные плана из вашей БД/кеша (ctx), если есть
+  const planData = ctx?.plan || null;
+  const html = renderPlanText(planData);
+  await safeSendHTML(bot, chatId, html, { reply_markup: mainKb }); // mainKb — ваш основной клавиатурный markup
 }
 
 // Безопасная отправка — чтобы видеть ошибки API
@@ -995,6 +994,41 @@ bot.on('callback_query', async (q) => {
 
   } catch (e) {
     console.error('CQ error:', e);
+  }
+});
+
+// --- обработчики ---
+
+// 1) CallbackQuery для сборки плана (plan:build)
+bot.on('callback_query', async (cq) => {
+  try {
+    const data = cq.data || '';
+    if (data === 'plan:build') {
+      await bot.answerCallbackQuery(cq.id, { text: 'Готовлю план…' }); // закрыть "часик"
+      // тут ваша логика сборки плана и сохранение в ctx.user/БД
+      // ctx.user.plan = ...
+
+      const chatId = cq.message?.chat?.id || cq.from.id;
+      await showPlan(bot, chatId, /* ctx */ null);
+      return;
+    }
+
+    // ... прочие ваши onb:* обработчики ...
+  } catch (e) {
+    console.error('callback_query handler error:', e);
+    // безопасная попытка закрыть "часик"
+    if (cq?.id) {
+      try { await bot.answerCallbackQuery(cq.id); } catch {}
+    }
+  }
+});
+
+// 2) Текстовая кнопка "📅 План"
+bot.onText(/^\uD83D\uDCC5\s?План$/, async (msg) => {
+  try {
+    await showPlan(bot, msg.chat.id, /* ctx */ null);
+  } catch (e) {
+    console.error('showPlan text handler error:', e);
   }
 });
 
