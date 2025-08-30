@@ -114,20 +114,9 @@ bot.on('callback_query', (q) => {
   console.log('CQ:', q.data, 'from', q.from?.id);
 });
 
-// ===== Подключаем НОВЫЙ модуль анкеты и жёстко регистрируем =====
-let onbMod;
-try {
-  onbMod = require('./src/onboarding-max'); // { getUser, registerOnboarding, startOnboarding }
-  if (onbMod && typeof onbMod.registerOnboarding === 'function' && !global.__ONB_REG) {
-    onbMod.registerOnboarding(bot);
-    global.__ONB_REG = true;
-    console.log('Onboarding: handlers registered');
-  } else {
-    console.error('Onboarding: module missing or already registered');
-  }
-} catch (e) {
-  console.error('Onboarding: require error', e);
-}
+// ===== Подключаем модуль анкеты =====
+const { registerOnboarding } = require('./src/onboarding-max');
+if (!global.__ONB_REG) { registerOnboarding(bot); global.__ONB_REG = true; }
 
 
 

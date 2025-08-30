@@ -7,6 +7,16 @@ const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPE
 // ==== Flood control & retries (429) ==========================================================
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
+// Игнорируем повторный тот же callback в течение 800 мс
+const __lastCb = new Map();
+function isDupeCb(chatId, data) {
+  const key = chatId + ':' + data;
+  const now = Date.now();
+  const prev = __lastCb.get(key) || 0;
+  __lastCb.set(key, now);
+  return (now - prev) < 800;
+}
+
 async function sendSafe(bot, method, args, label = method) {
   for (let i = 0; i < 3; i++) {
     try {
@@ -43,6 +53,10 @@ const sendMsg    = (bot, chatId, text, opts={})        => enqueue(chatId, () => 
 const editText   = (bot, chatId, msgId, text, opts={}) => enqueue(chatId, () => sendSafe(bot, 'editMessageText', [{ chat_id: chatId, message_id: msgId, text, ...opts }], 'editMessageText'));
 const editMarkup = (bot, chatId, msgId, markup)        => enqueue(chatId, () => sendSafe(bot, 'editMessageReplyMarkup', [markup, { chat_id: chatId, message_id: msgId }], 'editMessageReplyMarkup'));
 const answerCb   = (bot, qid, chatId, opts={})         => enqueue(chatId, () => sendSafe(bot, 'answerCallbackQuery', [qid, opts], 'answerCallbackQuery'));
+
+// БЫСТРЫЙ ответ на callback: без очереди и без задержки!
+const answerCbNow = (bot, qid, opts = {}) =>
+  sendSafe(bot, 'answerCallbackQuery', [qid, opts], 'answerCallbackQuery');
 
 // ==== User store ============================================================================
 const __users = global.__users || (global.__users = new Map());
@@ -202,6 +216,7 @@ async function _sendQuestion(bot, chatId){
   if (st.idx >= ONB.length) return finishOnboarding(bot, chatId);
 
   const q = ONB[st.idx];
+  console.log('ONB step', st.idx, '→', q?.key);
 
   if (q.type === 'single') {
     // inline buttons
@@ -447,6 +462,12 @@ function registerOnboarding(bot){
   bot.on('callback_query', async (q) => {
     const chatId = q.message?.chat?.id;
     if (!chatId) return;
+
+    if (isDupeCb(chatId, q.data || '')) {
+      // Быстрый ACK и выходим
+      await answerCbNow(bot, q.id);
+      return;
+    }
 
     const u = getUser(chatId);
     const data = q.data || '';
