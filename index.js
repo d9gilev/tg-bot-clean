@@ -129,24 +129,7 @@ try {
   console.error('Onboarding: require error', e);
 }
 
-// ===== УНИВЕРСАЛЬНЫЙ запуск анкеты (и команда, и текст кнопки) =====
-// Матчим /onboarding, /anketa, «Анкета» с/без эмодзи и лишних пробелов.
-const reAnketa = /^(?:\/onboarding|\/anketa|анкета|🧭\s*анкета)$/i;
 
-bot.onText(reAnketa, async (msg) => {
-  const chatId = msg.chat.id;
-  console.log('ONB launch by text:', msg.text);
-  if (!onbMod || typeof onbMod.startOnboarding !== 'function') {
-    await bot.sendMessage(chatId, 'Анкета временно недоступна. Проверь логи: не загрузился модуль onboarding-max.js.');
-    return;
-  }
-  try {
-    await onbMod.startOnboarding(bot, chatId);
-  } catch (e) {
-    console.error('startOnboarding error', e);
-    await bot.sendMessage(chatId, 'Не смог запустить анкету. Смотри логи Railway.');
-  }
-});
 
 // === B) Анкета: модульная система ===
 
