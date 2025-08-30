@@ -180,13 +180,7 @@ function setUser(chatId, patch) {
   return updated;
 }
 
-// Инициализируем модуль onboarding с функциями доступа к данным
-if (onbMod && typeof onbMod.initOnboarding === 'function') {
-  onbMod.initOnboarding(getUser, setUser);
-  console.log('Onboarding: initialized with getUser/setUser functions');
-} else {
-  console.error('Onboarding: initOnboarding function not found');
-}
+// Модуль onboarding самодостаточен - не требует инициализации
 
 
 

@@ -4,6 +4,22 @@
 const OpenAI = require('openai');
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// --- SAFE user store: модуль сам хранит пользователей и не зависит от внешних getUser ---
+const __users = global.__users || (global.__users = new Map());
+
+function ensureUser(chatId) {
+  if (!__users.has(chatId)) {
+    __users.set(chatId, {
+      chatId,
+      tz: process.env.TZ_DEFAULT || 'Europe/Moscow'
+    });
+  }
+  return __users.get(chatId);
+}
+
+// Внутри файла используем getUser как алиас ensureUser (на совместимость с прошлым кодом)
+const getUser = ensureUser;
+
 // Конфигурация вопросов анкеты
 const ONB_QUESTIONS = [
   // БЛОК: ИДЕНТИЧНОСТЬ
@@ -261,15 +277,7 @@ function defaultWorkouts(days) {
   return map[days] || map[3];
 }
 
-// Функции будут переданы из основного файла
-let getUser = null;
-let setUser = null;
-
-// Функция для инициализации с переданными функциями
-function initOnboarding(getUserFn, setUserFn) {
-  getUser = getUserFn;
-  setUser = setUserFn;
-}
+// Модуль самодостаточен - использует собственное хранилище пользователей
 
 // Главная клавиатура (соответствует основному файлу)
 const mainKb = {
@@ -302,7 +310,6 @@ function startOnboarding(bot, chatId) {
 }
 
 module.exports = { 
-  initOnboarding,
   registerOnboarding, 
   startOnboarding, 
   onbState,
