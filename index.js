@@ -60,12 +60,21 @@ bot.setMyCommands([
   { command: 'version', description: 'Версия бота' },
   { command: 'start', description: 'Главное меню' },
   { command: 'menu', description: 'Показать меню' },
-  { command: 'onboarding', description: 'Пройти анкету' }
+  { command: 'onboarding', description: 'Пройти анкету' },
+  { command: 'onb_state', description: 'Диагностика анкеты' }
 ]).catch(console.error);
 
 bot.onText(/^\/version$/, (msg) => {
   const short = BUILD.sha ? BUILD.sha.slice(0,7) : '—';
   bot.sendMessage(msg.chat.id, `Версия: ${BUILD.onb}\nCommit: ${short}\nStarted: ${BUILD.startedAt}`);
+});
+
+// Диагностика: показать состояние онбординга
+bot.onText(/^\/onb_state$/, (msg) => {
+  const u = onbMod.getUser(msg.chat.id);
+  const state = u.onb ? { idx: u.onb.idx, waitingIntro: u.onb.waitingIntro, nextKey: (u.onb.idx !== undefined ? 'see logs' : null) } : 'none';
+  console.log('ONB STATE', msg.chat.id, u.onb);
+  bot.sendMessage(msg.chat.id, 'onb: ' + (u.onb ? JSON.stringify(u.onb, null, 2) : 'none'));
 });
 
 // 2) функция показывающая НИЖНЮЮ reply-клавиатуру
@@ -103,7 +112,7 @@ bot.on('message', (m) => {
 // ===== Подключаем НОВЫЙ модуль анкеты и жёстко регистрируем =====
 let onbMod;
 try {
-  onbMod = require('./src/onboarding-max'); // { registerOnboarding, startOnboarding }
+  onbMod = require('./src/onboarding-max'); // { getUser, registerOnboarding, startOnboarding }
   if (onbMod && typeof onbMod.registerOnboarding === 'function' && !global.__ONB_REG) {
     onbMod.registerOnboarding(bot);
     global.__ONB_REG = true;
