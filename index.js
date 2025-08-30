@@ -15,8 +15,7 @@ try {
 const cron = require('node-cron');
 
 // 1) Импортируем модуль анкеты
-const onboarding = require('./src/onboarding-max');
-const { initOnboarding, registerOnboarding, startOnboarding } = onboarding;
+const { registerOnboarding, startOnboarding } = require('./src/onboarding-max');
 
 const TOKEN  = process.env.BOT_TOKEN;
 const BASE   = process.env.WEBHOOK_URL;     // https://…up.railway.app
@@ -87,18 +86,6 @@ bot.onText(/^\/menu$/, async (msg) => {
 
 // === B) Анкета: модульная система ===
 
-// 4) ЯВНЫЙ запуск анкеты (команда и нижняя кнопка)
-bot.onText(/^\/onboarding$|^🧭 Анкета$/, async (msg) => {
-  const chatId = msg.chat.id;
-  console.log('ONB start by user', chatId);
-  try {
-    await startOnboarding(bot, chatId); // <-- единая точка входа
-  } catch (e) {
-    console.error('ONB start error', e);
-    await bot.sendMessage(chatId, 'Анкета пока не подключена. Проверь, что файл src/onboarding-max.js существует и экспортирует registerOnboarding/startOnboarding.');
-  }
-});
-
 // ==== SETTINGS ====
 const DAY_LIMIT_MEALS = 4; // базовый лимит на день (перекусов)
 const TZ = process.env.TZ || 'Europe/Amsterdam'; // можно поменять на свой
@@ -143,8 +130,7 @@ function setUser(chatId, patch) {
   return updated;
 }
 
-// Инициализируем модуль анкеты с функциями
-initOnboarding(getUser, setUser);
+
 
 // Дата-сутки по TZ: 'YYYY-MM-DD'
 function dayKeyNow() {
@@ -1054,30 +1040,7 @@ bot.on('message', async (msg) => {
     }
   }
   
-  // Обработка ответов анкеты (модульная система)
-  const state = onboarding.onbState.get(msg.chat.id);
-  if (state) {
-    const next = onboarding.getNextQuestion(msg.chat.id);
-    if (!next) return;
-    
-    const { question } = next;
-    const { ok, err, val } = onboarding.validateAnswer(question, msg.text);
-    
-    if (!ok) {
-      await bot.sendMessage(msg.chat.id, err);
-      return;
-    }
-    
-    // Сохраняем ответ
-    if (val !== null) {
-      state.answers[question.key] = val;
-    }
-    
-    // Переходим к следующему вопросу
-    state.idx += 1;
-    await onboarding._sendQuestion(bot, msg.chat.id);
-    return;
-  }
+
   
   } catch (e) {
     console.error('Handler error:', e); // чтобы процесс не падал
