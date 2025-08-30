@@ -14,8 +14,13 @@ try {
 }
 const cron = require('node-cron');
 
-// 1) Импортируем модуль анкеты
-const { registerOnboarding, startOnboarding } = require('./src/onboarding-max');
+// ===== Версия/диагностика, чтобы видеть свежий деплой =====
+const BUILD = {
+  sha: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.COMMIT_SHA || 'local',
+  startedAt: new Date().toISOString(),
+  onb: 'ONB-2025-08-30'
+};
+console.log('BOOT:', BUILD);
 
 const TOKEN  = process.env.BOT_TOKEN;
 const BASE   = process.env.WEBHOOK_URL;     // https://…up.railway.app
@@ -51,12 +56,17 @@ const safeSend = (chatId, text, opts) =>
 
 // === A) Команды и главное меню ===
 
-// 1) зарегистрируем команды (чтобы в Telegram были в меню «/»)
 bot.setMyCommands([
+  { command: 'version', description: 'Версия бота' },
   { command: 'start', description: 'Главное меню' },
-  { command: 'onboarding', description: 'Пройти анкету' },
-  { command: 'menu', description: 'Показать меню' }
+  { command: 'menu', description: 'Показать меню' },
+  { command: 'onboarding', description: 'Пройти анкету' }
 ]).catch(console.error);
+
+bot.onText(/^\/version$/, (msg) => {
+  const short = BUILD.sha ? BUILD.sha.slice(0,7) : '—';
+  bot.sendMessage(msg.chat.id, `Версия: ${BUILD.onb}\nCommit: ${short}\nStarted: ${BUILD.startedAt}`);
+});
 
 // 2) функция показывающая НИЖНЮЮ reply-клавиатуру
 async function showMainMenu(chatId, text = 'Главное меню') {
@@ -82,6 +92,46 @@ bot.onText(/^\/start$/, async (msg) => {
 bot.onText(/^\/menu$/, async (msg) => {
   const chatId = msg.chat.id;
   await showMainMenu(chatId);
+});
+
+// ===== Диагностика входящих сообщений (временно, можно оставить) =====
+bot.on('message', (m) => {
+  if (!m?.chat?.id) return;
+  console.log('DBG msg:', m.chat.id, JSON.stringify(m.text || m.caption || '(non-text)'));
+});
+
+// ===== Подключаем НОВЫЙ модуль анкеты и жёстко регистрируем =====
+let onbMod;
+try {
+  onbMod = require('./src/onboarding-max'); // { registerOnboarding, startOnboarding }
+  if (onbMod && typeof onbMod.registerOnboarding === 'function' && !global.__ONB_REG) {
+    onbMod.registerOnboarding(bot);
+    global.__ONB_REG = true;
+    console.log('Onboarding: handlers registered');
+  } else {
+    console.error('Onboarding: module missing or already registered');
+  }
+} catch (e) {
+  console.error('Onboarding: require error', e);
+}
+
+// ===== УНИВЕРСАЛЬНЫЙ запуск анкеты (и команда, и текст кнопки) =====
+// Матчим /onboarding, /anketa, «Анкета» с/без эмодзи и лишних пробелов.
+const reAnketa = /^(?:\/onboarding|\/anketa|анкета|🧭\s*анкета)$/i;
+
+bot.onText(reAnketa, async (msg) => {
+  const chatId = msg.chat.id;
+  console.log('ONB launch by text:', msg.text);
+  if (!onbMod || typeof onbMod.startOnboarding !== 'function') {
+    await bot.sendMessage(chatId, 'Анкета временно недоступна. Проверь логи: не загрузился модуль onboarding-max.js.');
+    return;
+  }
+  try {
+    await onbMod.startOnboarding(bot, chatId);
+  } catch (e) {
+    console.error('startOnboarding error', e);
+    await bot.sendMessage(chatId, 'Не смог запустить анкету. Смотри логи Railway.');
+  }
 });
 
 // === B) Анкета: модульная система ===
@@ -1223,19 +1273,21 @@ app.listen(PORT, '0.0.0.0', async () => {
     drop_pending_updates: true
   });
     console.log('Webhook set result:', result);
+    
+    // Обновляем webhook с новыми настройками
+    console.log('Updating webhook with latest settings...');
+    const updateResult = await bot.setWebHook(hookUrl, {
+      secret_token: SECRET,
+      allowed_updates: ['message', 'callback_query'],
+      drop_pending_updates: false // не дропаем апдейты при обновлении
+    });
+    console.log('Webhook update result:', updateResult);
   } catch (error) {
     console.error('Webhook setup error:', error);
     console.error('Error details:', error?.response?.body || error.message);
   }
   
-  // 2) Регистрируем обработчики анкеты ОДИН РАЗ
-  if (typeof registerOnboarding === 'function' && !global.__ONB_REG) {
-    registerOnboarding(bot);
-    global.__ONB_REG = true;
-    console.log('Onboarding: handlers registered');
-  } else {
-    console.log('Onboarding: registerOnboarding not found or already registered');
-  }
+
 });
 
 // ===== Мини-тест: проверяем инлайн-кнопки и снятие нижней клавиатуры =====
