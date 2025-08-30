@@ -4,6 +4,34 @@
 const OpenAI = require('openai');
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// ---- Безопасная отправка в Telegram с ретраем на 429 (Too Many Requests)
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+async function sendSafe(bot, method, args, label = method) {
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await bot[method](...args);
+    } catch (e) {
+      // Если словили 429 — подождём и попробуем ещё раз
+      const is429 = e && e.code === 'ETELEGRAM' && e.response && e.response.statusCode === 429;
+      if (is429) {
+        const ra = e.response?.body?.parameters?.retry_after ?? 1;
+        console.warn(`[429] ${label}: retry in ${ra}s`);
+        await wait((ra + 0.5) * 1000);
+        continue;
+      }
+      throw e;
+    }
+  }
+  // Если 3 попытки не помогли — пробрасываем
+  throw new Error(`[sendSafe] ${label} failed after retries`);
+}
+
+// Удобные шорткаты:
+const sendMsg   = (bot, chatId, text, opts) => sendSafe(bot, 'sendMessage', [chatId, text, opts], 'sendMessage');
+const editText  = (bot, chatId, msgId, text, opts) => sendSafe(bot, 'editMessageText', [{ chat_id: chatId, message_id: msgId, text, ...opts }], 'editMessageText');
+const editMarkup= (bot, chatId, msgId, markup) => sendSafe(bot, 'editMessageReplyMarkup', [markup, { chat_id: chatId, message_id: msgId }], 'editMessageReplyMarkup');
+const answerCb  = (bot, qid, opts) => sendSafe(bot, 'answerCallbackQuery', [qid, opts], 'answerCallbackQuery');
+
 // --- SAFE user store: модуль сам хранит пользователей и не зависит от внешних getUser ---
 const __users = global.__users || (global.__users = new Map());
 
@@ -164,10 +192,10 @@ async function _sendQuestion(bot, chatId) {
       resize_keyboard: true,
       one_time_keyboard: true
     };
-    await bot.sendMessage(chatId, question.prompt, { reply_markup: keyboard });
+    await sendMsg(bot, chatId, question.prompt, { reply_markup: keyboard });
   } else {
     const keyboard = { remove_keyboard: true };
-    await bot.sendMessage(chatId, question.prompt, { reply_markup: keyboard });
+    await sendMsg(bot, chatId, question.prompt, { reply_markup: keyboard });
   }
 }
 
@@ -211,7 +239,7 @@ async function finishOnboarding(bot, chatId) {
     resize_keyboard: true,
     one_time_keyboard: false
   };
-  await bot.sendMessage(chatId, summary, { reply_markup: keyboard });
+  await sendMsg(bot, chatId, summary, { reply_markup: keyboard });
 }
 
 // Функция создания плана из ответов (базовая версия)
@@ -305,7 +333,7 @@ function startOnboarding(bot, chatId) {
   // Инициализируем состояние анкеты
   onbState.set(chatId, { idx: 0, answers: {} });
   
-  return bot.sendMessage(chatId, 'Начинаем персонализацию: отвечай коротко и по делу.')
+  return sendMsg(bot, chatId, 'Начинаем персонализацию: отвечай коротко и по делу.')
     .then(() => _sendQuestion(bot, chatId));
 }
 

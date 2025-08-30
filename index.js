@@ -891,6 +891,12 @@ bot.on('message', async (msg) => {
     const chatId = msg.chat?.id; 
     if (!chatId) return;
 
+    // Проверяем, не в процессе анкеты ли пользователь
+    if (onbMod && onbMod.getUser && onbMod.getUser(chatId)?.onb) {
+      console.log('User in onboarding, skipping main handler');
+      return; // не мешаем анкете
+    }
+
     // Фильтр вежливости - проверяем на токсичность
     if (!t.startsWith('/') && looksToxic(t)) {
       const reply = WITTY[Math.floor(Math.random() * WITTY.length)];
