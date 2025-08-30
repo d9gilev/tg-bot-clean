@@ -1,1 +1,10 @@
-tg-bot-clean/
+node_modules/
+dist/
+build/
+*.log
+.DS_Store
+
+# env-файлы
+.env
+.env.*
+!.env.example
