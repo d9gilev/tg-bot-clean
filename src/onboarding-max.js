@@ -197,29 +197,33 @@ function blockName(code){
   }[code] || code;
 }
 
-async function _sendQuestion(bot, chatId){
+async function _sendQuestion(bot, chatId) {
   const st = onbState.get(chatId);
   if (!st) return;
 
-  // интро перед входом в новый блок
+  // 1) СНАЧАЛА проматываем скрытые вопросы
+  while (st.idx < ONB.length && !needShow(ONB[st.idx], st.answers)) st.idx++;
+
+  // 2) Если вопросов больше нет — ЗАВЕРШАЕМ анкету
+  if (st.idx >= ONB.length) {
+    return finishOnboarding(bot, chatId);
+  }
+
+  // 3) Интро-блок — только если реально есть следующий вопрос/блок
   const blk = currentBlock(st);
   const u = getUser(chatId);
   u.onb = u.onb || { introShown:{} };
   if (!u.onb.introShown[blk]) {
     u.onb.waitingIntro = blk;
-    await sendIntro(bot, chatId, blk);
+    await sendIntro(bot, chatId, blk); // sendIntro сам ничего не шлёт для неизвестного блока
     return;
   }
 
-  // найти следующий показываемый вопрос
-  while (st.idx < ONB.length && !needShow(ONB[st.idx], st.answers)) st.idx++;
-  if (st.idx >= ONB.length) return finishOnboarding(bot, chatId);
-
+  // 4) Задаём вопрос
   const q = ONB[st.idx];
   console.log('ONB step', st.idx, '→', q?.key);
 
   if (q.type === 'single') {
-    // inline buttons
     await sendMsg(bot, chatId, q.prompt, { reply_markup: kbInlineSingle(q.key, q.opts) });
   } else {
     await sendMsg(bot, chatId, q.prompt, { reply_markup: { remove_keyboard:true } });
@@ -246,14 +250,19 @@ function singleFromText(q, text){
 }
 
 // ==== Finish & Plan =========================================================================
+// В конце анкеты — сохраним выбранный режим «пинков»
 async function finishOnboarding(bot, chatId){
   const st = onbState.get(chatId);
   if (!st) return;
 
   const u = getUser(chatId);
   u.onbAnswers = st.answers;
-  u.onb = null; // анкета завершена
+  // <<< добавлено: прокинем режим напоминаний в профиль пользователя
+  if (st.answers?.reminder_mode) {
+    u.reminder_mode = st.answers.reminder_mode;
+  }
 
+  u.onb = null; // анкета завершена
   onbState.delete(chatId);
 
   await sendMsg(bot, chatId,

@@ -339,7 +339,7 @@ const renderScreen = (u, screen = 'home') => {
     return {
       html:
 `<b>⚙️ Настройки</b>
-— Режим пинков: ${u.reminder_mode || 'Soft'}
+— Режим пинков: ${u.reminder_mode || u.onbAnswers?.reminder_mode || 'Мягкий'}
 — TZ: ${u.tz || 'Europe/Amsterdam'}
 — Креатин: ${creatine}`,
       kb: navKb('settings')
