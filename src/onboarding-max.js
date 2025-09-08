@@ -110,22 +110,25 @@ const INTRO = {
 
 const ONB = [
   // === 1) IDENTITY ===
-  { key:'name', block:'IDENTITY', type:'text',   prompt:'Как к тебе обращаться?' },
+  { key:'name', block:'IDENTITY', type:'text',   prompt:'Как тебя зовут?' },
   { key:'sex',  block:'IDENTITY', type:'single', prompt:'Пол:', opts:['М','Ж'] },
   { key:'tz',   block:'IDENTITY', type:'single', prompt:'Часовой пояс (для напоминаний):', 
     opts:['Europe/Moscow','Europe/Amsterdam','Asia/Almaty','Asia/Dubai','America/New_York','Другое…'] },
   { key:'age',       block:'IDENTITY', type:'number', prompt:'Возраст (лет):',    min:14, max:90 },
   { key:'height_cm', block:'IDENTITY', type:'number', prompt:'Рост (см):',        min:130, max:220 },
   { key:'weight_kg', block:'IDENTITY', type:'number', prompt:'Вес (кг):',         min:35,  max:250 },
-  { key:'waist_cm',  block:'IDENTITY', type:'number', prompt:'Талия (см) — по желанию:', min:50, max:200, optional:true },
 
   // === 2) SCREENING ===
   { key:'medical_flags',   block:'SCREENING', type:'single', prompt:'Есть диагностированные проблемы сердца/сосудов/обмена/почек или симптомы при нагрузке?', opts:['Нет','Да'] },
+  { key:'medical_details', block:'SCREENING', type:'text',   prompt:'Опиши подробнее:', showIf:{ field:'medical_flags', equals:'Да' } },
   { key:'meds_affecting',  block:'SCREENING', type:'single', prompt:'Принимаешь лекарства, влияющие на пульс/давление (β-блокаторы и т.п.)?', opts:['Нет','Да'] },
   { key:'meds_list',       block:'SCREENING', type:'text',   prompt:'Укажи названия препаратов (коротко):', showIf:{ field:'meds_affecting', equals:'Да' } },
   { key:'clotting_issue',  block:'SCREENING', type:'single', prompt:'Нарушения свёртываемости крови или антикоагулянты?', opts:['Нет','Да'] },
+  { key:'clotting_details',block:'SCREENING', type:'text',   prompt:'Опиши подробнее:', showIf:{ field:'clotting_issue', equals:'Да' } },
   { key:'pregnancy_status',block:'SCREENING', type:'single', prompt:'Беременность/послеродовый период?', opts:['Не актуально','Актуально'], showIf:{ field:'sex', equals:'Ж' } },
+  { key:'pregnancy_details',block:'SCREENING', type:'text',  prompt:'Опиши подробнее:', showIf:{ field:'pregnancy_status', equals:'Актуально' } },
   { key:'cardio_symptoms', block:'SCREENING', type:'single', prompt:'Есть тревожные симптомы сейчас (боль/давление в груди, необъяснимая одышка, обмороки)?', opts:['Нет','Да'] },
+  { key:'cardio_details',  block:'SCREENING', type:'text',   prompt:'Опиши подробнее:', showIf:{ field:'cardio_symptoms', equals:'Да' } },
   { key:'injury_notes',    block:'SCREENING', type:'text',   prompt:'Травмы/операции за 12 мес? Движения/упражнения, которые вызывают боль? (коротко)', optional:true },
 
   // === 3) GOALS ===
@@ -137,7 +140,7 @@ const ONB = [
 
   // === 4) PROFILE ===
   { key:'level',        block:'PROFILE', type:'single', prompt:'Уровень в силовых:', opts:['Новичок','Средний','Продвинутый'] },
-  { key:'training_hist',block:'PROFILE', type:'text',   prompt:'Стаж/перерывы (коротко):', optional:true },
+  { key:'training_hist',block:'PROFILE', type:'text',   prompt:'Стаж занятий (опыт):', optional:true },
   { key:'rpe_ready',    block:'PROFILE', type:'single', prompt:'Знаешь шкалу усилий RPE (0–10) и готов(а) ею пользоваться?', opts:['Да','Нет'] },
 
   // === 5) LOGISTICS ===
@@ -171,9 +174,6 @@ const ONB = [
   // === 10) REPORTING ===
   { key:'creatine_ok',      block:'REPORTING', type:'single', prompt:'Креатин 3–5 г/д — ок?', opts:['Да','Нет'] },
   { key:'omega_vitd',       block:'REPORTING', type:'single', prompt:'Омега-3/витамин D уже принимаешь?', opts:['Нет','Да, омега-3','Да, вит.D','Да, оба'] },
-  { key:'report_style',     block:'REPORTING', type:'single', prompt:'Как удобнее отчитываться?', opts:['Сразу после тренировки','Один раз вечером'] },
-  { key:'plan_rebuilds_ok', block:'REPORTING', type:'single', prompt:'Пересборка плана до 2–3 раз/мес — ок?', opts:['Да','Нет'] },
-  { key:'micro_swaps_ok',   block:'REPORTING', type:'single', prompt:'Точечные замены (1–2 упр.) — ок?', opts:['Да','Нет'] },
   { key:'month_constraints',block:'REPORTING', type:'text',   prompt:'Жёсткие дедлайны/поездки в этом месяце? (коротко)', optional:true },
   { key:'reminder_mode',    block:'REPORTING', type:'single', prompt:'Режим напоминаний/«пинков»:', opts:['Мягкий','Жёсткий','Выключено'] },
 ];
@@ -198,8 +198,12 @@ function currentBlock(state){ const q = ONB[state.idx]; return q?.block; }
 async function sendIntro(bot, chatId, block){
   const intro = INTRO[block];
   if (!intro) return;
+  
+  // Источники только в первом блоке
+  const sources = block === 'IDENTITY' ? '\n\n<b>Источник:</b> PAR-Q+/ACSM, ВОЗ-2020, AASM/SRS (сон), Morton-2018 (белок), ISSN (креатин).' : '';
+  
   await sendMsg(bot, chatId,
-    `<b>${blockName(block)}</b>\n${intro}\n\n<b>Источник:</b> PAR-Q+/ACSM, ВОЗ-2020, AASM/SRS (сон), Morton-2018 (белок), ISSN (креатин).`,
+    `<b>${blockName(block)}</b>\n${intro}${sources}`,
     { parse_mode:'HTML', reply_markup:{ inline_keyboard: [[{ text:'ОК ✅', callback_data:`onb:ok:${block}` }]] } }
   );
 }
@@ -367,10 +371,14 @@ async function generatePlanFromAnswersGPT_JSON(ans, openai) {
     },
     screening: {
       medical_flags: ans.medical_flags,
+      medical_details: ans.medical_details,
       meds_affecting, meds_list: ans.meds_list,
       clotting_issue: ans.clotting_issue,
+      clotting_details: ans.clotting_details,
       pregnancy_status: ans.pregnancy_status,
+      pregnancy_details: ans.pregnancy_details,
       cardio_symptoms_now: ans.cardio_symptoms,
+      cardio_details: ans.cardio_details,
       injury_notes: ans.injury_notes
     },
     training: {
@@ -390,7 +398,6 @@ async function generatePlanFromAnswersGPT_JSON(ans, openai) {
     recovery: { sleep_hours: ans.sleep_hours, stress_level: ans.stress_level, steps_level: ans.steps_level },
     reporting: {
       creatine_ok: ans.creatine_ok, omega_vitd: ans.omega_vitd,
-      plan_rebuilds_ok: ans.plan_rebuilds_ok, micro_swaps_ok: ans.micro_swaps_ok,
       reminder_mode: ans.reminder_mode, month_constraints: ans.month_constraints
     }
   };
@@ -461,6 +468,74 @@ function registerOnboarding(bot){
       `Отправь скриншот активности (Apple Health, Google Fit, Strava и т.д.) или фото тренировки.\n\n` +
       `Осталось отчётов сегодня: ${10 - u.dailyReports.count}/10`
     );
+  });
+
+  // кнопка "План"
+  bot.onText(/^(?:📅\s*план|план)$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    const u = getUser(chatId);
+    
+    if (!u.plan) {
+      await sendMsg(bot, chatId, 'Сначала пройди анкету, чтобы получить план тренировок.');
+      return;
+    }
+
+    const planText = `📅 <b>Твой план на 30 дней</b>
+
+<b>Цель:</b> ${u.plan.goal || '—'}
+<b>Силовые:</b> ${u.plan.days_per_week || '—'}×/нед (${u.plan.session_length || '—'})
+<b>Питание:</b> ~${u.plan.daily_kcal || '—'} ккал/день, белок ${u.plan.protein_g_per_kg || '1.6'} г/кг
+<b>Вода:</b> ~${u.plan.water_goal_ml || 2200} мл, <b>сон:</b> ⩾ ${u.plan.sleep_goal_h || 7} ч
+
+<b>Расписание:</b>
+${u.plan.workouts ? u.plan.workouts.join(' · ') : 'Понедельник — Грудь и трицепс: Жим лёжа 4x6–8, кардио 20 мин.\nСреда — Спина и бицепс: Тяга верхнего блока 4x8–10, кардио 20 мин.\nПятница — Ноги и плечи: Приседания 4x8–10, кардио 20 мин.'}`;
+
+    await sendMsg(bot, chatId, planText, { 
+      parse_mode: 'HTML',
+      reply_markup: {
+        keyboard: [
+          [{ text:'📅 План' }, { text:'📝 Отчёт' }],
+          [{ text:'🏠 Главное меню' }]
+        ],
+        resize_keyboard:true
+      }
+    });
+  });
+
+  // кнопка "Главное меню"
+  bot.onText(/^(?:🏠\s*главное\s*меню|главное\s*меню|меню)$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    const u = getUser(chatId);
+    
+    if (!u.plan) {
+      await sendMsg(bot, chatId, 
+        '👋 Привет! Я помогу составить персональный план тренировок.\n\n' +
+        'Нажми "Анкета" чтобы начать, или "Отчёт" если уже есть план.',
+        {
+          reply_markup: {
+            keyboard: [
+              [{ text:'🧭 Анкета' }, { text:'📝 Отчёт' }]
+            ],
+            resize_keyboard:true
+          }
+        }
+      );
+    } else {
+      await sendMsg(bot, chatId, 
+        '🏠 <b>Главное меню</b>\n\n' +
+        'Выбери действие:',
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            keyboard: [
+              [{ text:'📅 План' }, { text:'📝 Отчёт' }],
+              [{ text:'🏠 Главное меню' }]
+            ],
+            resize_keyboard:true
+          }
+        }
+      );
+    }
   });
 
   // отмена
@@ -646,7 +721,8 @@ function registerOnboarding(bot){
         await sendMsg(bot, chatId, 'Готово! Теперь можешь отправлять отчёты о тренировках.', {
           reply_markup: {
             keyboard: [
-              [{ text:'🧭 Анкета' }, { text:'📝 Отчёт' }]
+              [{ text:'📅 План' }, { text:'📝 Отчёт' }],
+              [{ text:'🏠 Главное меню' }]
             ],
             resize_keyboard:true
           }
@@ -692,7 +768,8 @@ function registerOnboarding(bot){
       await sendMsg(bot, chatId, 'Готово! Теперь можешь отправлять отчёты о тренировках.', {
         reply_markup: {
           keyboard: [
-            [{ text:'🧭 Анкета' }, { text:'📝 Отчёт' }]
+            [{ text:'📅 План' }, { text:'📝 Отчёт' }],
+            [{ text:'🏠 Главное меню' }]
           ],
           resize_keyboard:true
         }
