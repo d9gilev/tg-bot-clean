@@ -762,6 +762,23 @@ function registerOnboarding(bot){
     }
   });
 
+  // очистка кэша пользователя
+  bot.onText(/^\/clear$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    const u = getUser(chatId);
+    
+    // Очищаем все данные пользователя
+    u.plan = null;
+    u.gptPlan = null;
+    u.onbAnswers = null;
+    u.reports = [];
+    u.onb = null;
+    u.awaitingReport = false;
+    onbState.delete(chatId);
+    
+    await sendMsg(bot, chatId, '✅ Кэш очищен! Теперь можешь начать заново с /start');
+  });
+
   // обработка фото/документов для отчётов
   bot.on('message', async (msg) => {
     const chatId = msg.chat?.id;
@@ -973,7 +990,7 @@ function registerOnboarding(bot){
 
       // Если GPT не сработал - ошибка
       if (!planJson) {
-        await sendMsg(bot, chatId, '❌ Ошибка генерации плана. Попробуй ещё раз или обратись к администратору.');
+        await sendMsg(bot, chatId, '❌ Ошибка генерации плана. GPT не доступен. Проверьте настройки API ключа.');
         return;
       }
 
