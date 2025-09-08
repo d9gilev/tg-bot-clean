@@ -62,11 +62,33 @@ const answerCbNow = (bot, qid, opts = {}) =>
 const __users = global.__users || (global.__users = new Map());
 function ensureUser(chatId) {
   if (!__users.has(chatId)) {
-    __users.set(chatId, { chatId, tz: process.env.TZ_DEFAULT || 'Europe/Moscow' });
+    __users.set(chatId, { 
+      chatId, 
+      tz: process.env.TZ_DEFAULT || 'Europe/Moscow',
+      dailyReports: { count: 0, date: new Date().toDateString() }
+    });
   }
   return __users.get(chatId);
 }
 const getUser = ensureUser;
+
+// ==== Daily limits ==========================================================================
+function resetDailyCounters(user) {
+  const today = new Date().toDateString();
+  if (user.dailyReports.date !== today) {
+    user.dailyReports = { count: 0, date: today };
+  }
+}
+
+function canSendReport(user) {
+  resetDailyCounters(user);
+  return user.dailyReports.count < 10;
+}
+
+function incrementReportCount(user) {
+  resetDailyCounters(user);
+  user.dailyReports.count++;
+}
 
 // ==== Helpers ===============================================================================
 function norm(s){ return (s||'').toString().trim().toLowerCase().replace(/ё/g,'е'); }
@@ -392,6 +414,23 @@ async function generatePlanFromAnswersGPT_JSON(ans, openai) {
 // ==== Registration ==========================================================================
 function registerOnboarding(bot){
 
+  // стартовая команда
+  bot.onText(/^(?:\/start|старт)$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    await sendMsg(bot, chatId, 
+      '👋 Привет! Я помогу составить персональный план тренировок.\n\n' +
+      'Нажми "Анкета" чтобы начать, или "Отчёт" если уже есть план.',
+      {
+        reply_markup: {
+          keyboard: [
+            [{ text:'🧭 Анкета' }, { text:'📝 Отчёт' }]
+          ],
+          resize_keyboard:true
+        }
+      }
+    );
+  });
+
   // запуск по команде/кнопке
   bot.onText(/^(?:\/onboarding|\/anketa|анкета|🧭\s*анкета)$/i, async (msg) => {
     const chatId = msg.chat.id;
@@ -401,6 +440,27 @@ function registerOnboarding(bot){
       return;
     }
     startOnboarding(bot, chatId);
+  });
+
+  // кнопка "Отчёт"
+  bot.onText(/^(?:📝\s*отчёт|отчёт|отчет)$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    const u = getUser(chatId);
+    
+    if (!u.plan) {
+      await sendMsg(bot, chatId, 'Сначала пройди анкету, чтобы получить план тренировок.');
+      return;
+    }
+
+    if (!canSendReport(u)) {
+      await sendMsg(bot, chatId, `Лимит отчётов на сегодня исчерпан (10/10). Попробуй завтра.`);
+      return;
+    }
+
+    await sendMsg(bot, chatId, 
+      `Отправь скриншот активности (Apple Health, Google Fit, Strava и т.д.) или фото тренировки.\n\n` +
+      `Осталось отчётов сегодня: ${10 - u.dailyReports.count}/10`
+    );
   });
 
   // отмена
@@ -415,56 +475,89 @@ function registerOnboarding(bot){
     }
   });
 
-  // ответы текстом
+  // обработка фото/документов для отчётов
   bot.on('message', async (msg) => {
     const chatId = msg.chat?.id;
-    if (!chatId || !msg.text) return;
+    if (!chatId) return;
 
     const u = getUser(chatId);
-    if (!u?.onb) return; // вне анкеты — игнор
+    
+    // если есть план и отправлено фото/документ — это отчёт
+    if (u?.plan && (msg.photo || msg.document)) {
+      if (!canSendReport(u)) {
+        await sendMsg(bot, chatId, `Лимит отчётов на сегодня исчерпан (10/10). Попробуй завтра.`);
+        return;
+      }
 
-    const st = onbState.get(chatId);
-    if (!st) return;
+      incrementReportCount(u);
+      
+      const fileId = msg.photo ? msg.photo[msg.photo.length - 1].file_id : msg.document.file_id;
+      const caption = msg.caption || '';
+      
+      // сохраняем отчёт
+      u.reports = u.reports || [];
+      u.reports.push({
+        timestamp: new Date().toISOString(),
+        fileId,
+        caption,
+        type: msg.photo ? 'photo' : 'document'
+      });
 
-    // если ждём интро «ОК ✅» — игнорируем текст
-    if (u.onb?.waitingIntro) return;
+      await sendMsg(bot, chatId, 
+        `✅ Отчёт принят! (${u.dailyReports.count}/10 сегодня)\n\n` +
+        `Скриншот сохранён. Продолжай тренировки по плану!`
+      );
+      return;
+    }
 
-    // промотать до показываемого вопроса
-    while (st.idx < ONB.length && !needShow(ONB[st.idx], st.answers)) st.idx++;
-    if (st.idx >= ONB.length) return finishOnboarding(bot, chatId);
+    // если нет текста — игнорируем
+    if (!msg.text) return;
 
-    const q = ONB[st.idx];
+    // если идёт анкета — обрабатываем как раньше
+    if (u?.onb) {
+      const st = onbState.get(chatId);
+      if (!st) return;
 
-    if (q.type === 'single') {
-      // фоллбэк: ввёл текст вместо клика
-      const hit = singleFromText(q, msg.text);
-      if (hit) {
-        st.answers[q.key] = hit;
+      // если ждём интро «ОК ✅» — игнорируем текст
+      if (u.onb?.waitingIntro) return;
+
+      // промотать до показываемого вопроса
+      while (st.idx < ONB.length && !needShow(ONB[st.idx], st.answers)) st.idx++;
+      if (st.idx >= ONB.length) return finishOnboarding(bot, chatId);
+
+      const q = ONB[st.idx];
+
+      if (q.type === 'single') {
+        // фоллбэк: ввёл текст вместо клика
+        const hit = singleFromText(q, msg.text);
+        if (hit) {
+          st.answers[q.key] = hit;
+          st.idx++;
+          await wait(120);
+          return _sendQuestion(bot, chatId);
+        }
+        // попросим нажать кнопку
+        await sendMsg(bot, chatId, 'Выбери вариант кнопкой ниже 👇', { reply_markup: kbInlineSingle(q.key, q.opts) });
+        return;
+      }
+
+      if (q.type === 'number') {
+        const v = validateNumber(q, msg.text);
+        if (!v.ok) { await sendMsg(bot, chatId, v.err); return; }
+        st.answers[q.key] = v.val;
         st.idx++;
         await wait(120);
         return _sendQuestion(bot, chatId);
       }
-      // попросим нажать кнопку
-      await sendMsg(bot, chatId, 'Выбери вариант кнопкой ниже 👇', { reply_markup: kbInlineSingle(q.key, q.opts) });
-      return;
-    }
 
-    if (q.type === 'number') {
-      const v = validateNumber(q, msg.text);
-      if (!v.ok) { await sendMsg(bot, chatId, v.err); return; }
-      st.answers[q.key] = v.val;
+      // text
+      const val = (msg.text||'').trim();
+      if (!val && !q.optional) { await sendMsg(bot, chatId, 'Напиши ответ текстом.'); return; }
+      st.answers[q.key] = val || null;
       st.idx++;
       await wait(120);
       return _sendQuestion(bot, chatId);
     }
-
-    // text
-    const val = (msg.text||'').trim();
-    if (!val && !q.optional) { await sendMsg(bot, chatId, 'Напиши ответ текстом.'); return; }
-    st.answers[q.key] = val || null;
-    st.idx++;
-    await wait(120);
-    return _sendQuestion(bot, chatId);
   });
 
   // клики по inline-кнопкам
@@ -550,12 +643,10 @@ function registerOnboarding(bot){
           plan_status: 'active'
         };
         await sendMsg(bot, chatId, html, { parse_mode:'HTML' });
-        await sendMsg(bot, chatId, 'Готово! Возвращаюсь в меню.', {
+        await sendMsg(bot, chatId, 'Готово! Теперь можешь отправлять отчёты о тренировках.', {
           reply_markup: {
             keyboard: [
-              [{ text:'🏠 Главная' }, { text:'📅 План' }],
-              [{ text:'🍽️ Еда' },   { text:'📝 Отчёты' }],
-              [{ text:'🧭 Анкета' }, { text:'⚙️ Настройки' }]
+              [{ text:'🧭 Анкета' }, { text:'📝 Отчёт' }]
             ],
             resize_keyboard:true
           }
@@ -598,12 +689,10 @@ function registerOnboarding(bot){
         await sendMsg(bot, chatId, '<b>План готов.</b> Открой «📅 План», чтобы посмотреть детали.', { parse_mode:'HTML' });
       }
 
-      await sendMsg(bot, chatId, 'Готово! Возвращаюсь в меню.', {
+      await sendMsg(bot, chatId, 'Готово! Теперь можешь отправлять отчёты о тренировках.', {
         reply_markup: {
           keyboard: [
-            [{ text:'🏠 Главная' }, { text:'📅 План' }],
-            [{ text:'🍽️ Еда' },   { text:'📝 Отчёты' }],
-            [{ text:'🧭 Анкета' }, { text:'⚙️ Настройки' }]
+            [{ text:'🧭 Анкета' }, { text:'📝 Отчёт' }]
           ],
           resize_keyboard:true
         }
@@ -628,5 +717,7 @@ function startOnboarding(bot, chatId){
 module.exports = {
   getUser,
   registerOnboarding,
-  startOnboarding
+  startOnboarding,
+  canSendReport,
+  incrementReportCount
 };
