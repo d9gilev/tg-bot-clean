@@ -174,7 +174,7 @@ const ONB = [
   // === 10) REPORTING ===
   { key:'creatine_ok',      block:'REPORTING', type:'single', prompt:'Креатин 3–5 г/д — ок?', opts:['Да','Нет'] },
   { key:'omega_vitd',       block:'REPORTING', type:'single', prompt:'Омега-3/витамин D уже принимаешь?', opts:['Нет','Да, омега-3','Да, вит.D','Да, оба'] },
-  { key:'month_constraints',block:'REPORTING', type:'text',   prompt:'Жёсткие дедлайны/поездки в этом месяце? (коротко)', optional:true },
+  { key:'month_constraints',block:'REPORTING', type:'text',   prompt:'Что может отвлечь от плана занятий в этом месяце? (поездки, дедлайны, события)', optional:true },
   { key:'reminder_mode',    block:'REPORTING', type:'single', prompt:'Режим напоминаний/«пинков»:', opts:['Мягкий','Жёсткий','Выключено'] },
 ];
 
@@ -410,7 +410,7 @@ async function generatePlanFromAnswersGPT_JSON(ans, openai) {
     temperature: 0.3,
     messages: [
       { role: 'system', content: sys },
-      { role: 'user', content: 'Сгенерируй план по анкете (выведи ТОЛЬКО один JSON):\n' + JSON.stringify(payload) }
+      { role: 'user', content: 'Сгенерируй план по анкете (выведи ТОЛЬКО один JSON):\n' + JSON.stringify(payload, null, 2) }
     ]
   });
 
@@ -685,7 +685,9 @@ ${u.plan.workouts ? u.plan.workouts.join(' · ') : 'Понедельник — �
       let planJson = null;
 
       try {
+        console.log('Calling GPT with answers:', Object.keys(ans));
         planJson = await generatePlanFromAnswersGPT_JSON(ans, openai);
+        console.log('GPT response:', planJson ? 'Success' : 'Failed');
       } catch (e) {
         console.error('GPT plan error', e);
       }
@@ -695,6 +697,7 @@ ${u.plan.workouts ? u.plan.workouts.join(' · ') : 'Понедельник — �
         const fb = fallbackPlan(ans);
         const html =
 `<b>План на 4 недели</b>
+
 <b>Питание:</b> ~${fb.kcal} ккал/день, белок ~${fb.protein_g_per_kg} г/кг.
 <b>Вода:</b> ~${fb.water_ml} мл, <b>сон:</b> ⩾${fb.sleep_h} ч.
 <b>Силовые ${fb.days}×/нед:</b> ${fb.sessions.join(' · ')}.
@@ -760,7 +763,9 @@ ${u.plan.workouts ? u.plan.workouts.join(' · ') : 'Понедельник — �
       // Сохраним красивый HTML, если вернулся
       const html = planJson.rich_text?.week_overview_html || planJson.rich_text?.intro_html;
       if (html) {
-        await sendMsg(bot, chatId, html, { parse_mode:'HTML' });
+        // Заменяем <br> на \n для Telegram
+        const cleanHtml = html.replace(/<br\s*\/?>/gi, '\n');
+        await sendMsg(bot, chatId, cleanHtml, { parse_mode:'HTML' });
       } else {
         await sendMsg(bot, chatId, '<b>План готов.</b> Открой «📅 План», чтобы посмотреть детали.', { parse_mode:'HTML' });
       }
