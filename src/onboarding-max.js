@@ -95,6 +95,75 @@ function incrementReportCount(user) {
 function norm(s){ return (s||'').toString().trim().toLowerCase().replace(/ё/g,'е'); }
 function chunk(arr, n){ const out=[]; for(let i=0;i<arr.length;i+=n) out.push(arr.slice(i,i+n)); return out; }
 
+// Генерация случайных данных для тестовой анкеты
+function generateRandomAnswers() {
+  const names = ['Алексей', 'Мария', 'Дмитрий', 'Анна', 'Сергей', 'Елена', 'Андрей', 'Ольга', 'Максим', 'Татьяна'];
+  const goals = ['Похудение', 'Набор мышечной массы', 'Поддержание здоровья и самочувствия', 'Увеличение производительности'];
+  const levels = ['Новичок', 'Средний', 'Продвинутый'];
+  const reminderModes = ['Мягкий', 'Жёсткий', 'Выключено'];
+  const sleepHours = ['<6', '6–7', '7–8', '8+'];
+  const stressLevels = ['Нет', 'Иногда', 'Часто'];
+  const stepsLevels = ['<5k', '5–8k', '8–11k', '>11k'];
+  const trackStyles = ['Да', 'Нет', 'Только калории', 'Только белок'];
+  const mealsPerDay = ['2', '3', '4', '5+'];
+  const omegaVitd = ['Нет', 'Да, омега-3', 'Да, вит.D', 'Да, оба'];
+  
+  const sex = Math.random() > 0.5 ? 'М' : 'Ж';
+  const age = Math.floor(Math.random() * 40) + 18; // 18-58 лет
+  const height = sex === 'М' ? Math.floor(Math.random() * 30) + 165 : Math.floor(Math.random() * 25) + 155; // М: 165-195, Ж: 155-180
+  const weight = sex === 'М' ? Math.floor(Math.random() * 40) + 65 : Math.floor(Math.random() * 35) + 50; // М: 65-105, Ж: 50-85
+  
+  return {
+    name: names[Math.floor(Math.random() * names.length)],
+    sex: sex,
+    tz: 'Europe/Moscow',
+    age: age,
+    height_cm: height,
+    weight_kg: weight,
+    medical_flags: Math.random() > 0.8 ? 'Да' : 'Нет',
+    medical_details: Math.random() > 0.8 ? 'Гипертония 1 степени' : undefined,
+    meds_affecting: Math.random() > 0.9 ? 'Да' : 'Нет',
+    meds_list: Math.random() > 0.9 ? 'Эналаприл' : undefined,
+    clotting_issue: Math.random() > 0.95 ? 'Да' : 'Нет',
+    clotting_details: Math.random() > 0.95 ? 'Принимаю варфарин' : undefined,
+    pregnancy_status: sex === 'Ж' ? (Math.random() > 0.9 ? 'Актуально' : 'Не актуально') : undefined,
+    pregnancy_details: sex === 'Ж' && Math.random() > 0.9 ? '2 триместр' : undefined,
+    cardio_symptoms: Math.random() > 0.9 ? 'Да' : 'Нет',
+    cardio_details: Math.random() > 0.9 ? 'Иногда одышка при нагрузке' : undefined,
+    injury_notes: Math.random() > 0.7 ? 'Старая травма колена' : undefined,
+    goal: goals[Math.floor(Math.random() * goals.length)],
+    weight_loss_month_kg: Math.random() > 0.5 ? Math.floor(Math.random() * 3) + 1 : undefined,
+    weight_gain_month_kg: Math.random() > 0.5 ? Math.floor(Math.random() * 2) + 1 : undefined,
+    secondary_goals: Math.random() > 0.5 ? 'Улучшить выносливость, укрепить спину' : undefined,
+    goal_kpi: Math.random() > 0.5 ? 'Сбросить 3 кг, подтянуться 5 раз' : undefined,
+    level: levels[Math.floor(Math.random() * levels.length)],
+    training_hist: Math.random() > 0.3 ? 'Занимаюсь 2 года, был перерыв 6 месяцев' : undefined,
+    rpe_ready: Math.random() > 0.3 ? 'Да' : 'Нет',
+    days_per_week: Math.floor(Math.random() * 4) + 2, // 2-5 дней
+    session_length: ['60 мин', '75 мин', '90 мин'][Math.floor(Math.random() * 3)],
+    preferred_slots: Math.random() > 0.5 ? 'Пн/Ср/Пт утром, Вт/Чт вечером' : undefined,
+    equipment: 'Дом, Гантели, Турник, Эспандеры',
+    equip_limits_f: Math.random() > 0.8 ? 'Есть ограничения' : 'Ограничений нет',
+    equipment_limits: Math.random() > 0.8 ? 'Нет штанги, только гантели до 20кг' : undefined,
+    dislikes: Math.random() > 0.6 ? 'Бег, приседания со штангой' : undefined,
+    cardio_pref: ['Ходьба в горку', 'Вело', 'Эллипс', 'Гребля', 'Плавание'][Math.floor(Math.random() * 5)],
+    diet_limits: Math.random() > 0.7 ? 'Лактоза, глютен' : undefined,
+    track_style: trackStyles[Math.floor(Math.random() * trackStyles.length)],
+    meals_per_day: mealsPerDay[Math.floor(Math.random() * mealsPerDay.length)],
+    water_ready: Math.random() > 0.2 ? 'Да' : 'Нет',
+    sleep_hours: sleepHours[Math.floor(Math.random() * sleepHours.length)],
+    stress_level: stressLevels[Math.floor(Math.random() * stressLevels.length)],
+    steps_level: stepsLevels[Math.floor(Math.random() * stepsLevels.length)],
+    z2_after_lifts: Math.random() > 0.3 ? 'Да' : 'Нет',
+    swim_ok: Math.random() > 0.7 ? 'Да' : 'Нет',
+    steps_goal_ok: Math.random() > 0.2 ? 'Да' : 'Нет',
+    creatine_ok: Math.random() > 0.3 ? 'Да' : 'Нет',
+    omega_vitd: omegaVitd[Math.floor(Math.random() * omegaVitd.length)],
+    month_constraints: Math.random() > 0.6 ? 'Командировка в середине месяца' : undefined,
+    reminder_mode: reminderModes[Math.floor(Math.random() * reminderModes.length)]
+  };
+}
+
 // ==== Анкета: вопросы + интро-блоки =========================================================
 const INTRO = {
   IDENTITY: `Перед началом — уточним базовые данные (имя, пол, возраст, рост/вес, часовой пояс). Это нужно для персонализации плана.`,
@@ -526,7 +595,8 @@ function registerOnboarding(bot){
       {
         reply_markup: {
           keyboard: [
-            [{ text:'🧭 Анкета' }, { text:'📝 Отчёт' }]
+            [{ text:'🧭 Анкета' }, { text:'📝 Отчёт' }],
+            [{ text:'🧪 Тестовая анкета' }]
           ],
           resize_keyboard:true
         }
@@ -543,6 +613,40 @@ function registerOnboarding(bot){
       return;
     }
     startOnboarding(bot, chatId);
+  });
+
+  // тестовая анкета с случайными данными
+  bot.onText(/^(?:🧪\s*тестовая\s*анкета|тестовая\s*анкета|тест)$/i, async (msg) => {
+    const chatId = msg.chat.id;
+    const u = getUser(chatId);
+    
+    if (u.onb) {
+      await sendMsg(bot, chatId, 'Анкета уже идёт. Напиши /cancel чтобы отменить.');
+      return;
+    }
+
+    await sendMsg(bot, chatId, '🧪 Заполняю тестовую анкету случайными данными...');
+    
+    // Генерируем случайные ответы
+    const randomAnswers = generateRandomAnswers();
+    
+    // Создаем состояние анкеты
+    u.onb = { introShown: {}, waitingIntro: null };
+    onbState.set(chatId, { idx: 0, answers: randomAnswers });
+    
+    // Пропускаем все интро и вопросы, сразу завершаем
+    await sendMsg(bot, chatId, 
+      '✅ Тестовая анкета заполнена!\n\n' +
+      `Имя: ${randomAnswers.name}\n` +
+      `Пол: ${randomAnswers.sex}\n` +
+      `Возраст: ${randomAnswers.age}\n` +
+      `Цель: ${randomAnswers.goal}\n` +
+      `Уровень: ${randomAnswers.level}\n` +
+      `Дней в неделю: ${randomAnswers.days_per_week}\n\n` +
+      'Теперь соберу персональный план на месяц (силовые, кардио Z2, питание, вода, сон, напоминания).\n' +
+      'Нажми кнопку — и я всё сгенерирую.',
+      { reply_markup:{ inline_keyboard: [[{ text:'Сформировать план ▶️', callback_data:'plan:build' }]] } }
+    );
   });
 
   // кнопка "Отчёт"
@@ -629,7 +733,7 @@ function registerOnboarding(bot){
           reply_markup: {
             keyboard: [
               [{ text:'📅 План' }, { text:'📝 Отчёт' }],
-              [{ text:'🏠 Главное меню' }]
+              [{ text:'🏠 Главное меню' }, { text:'🧪 Тестовая анкета' }]
             ],
             resize_keyboard:true
           }
